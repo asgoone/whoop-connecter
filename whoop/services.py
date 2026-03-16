@@ -64,6 +64,10 @@ class WhoopService:
     def login(self) -> str:
         return self._oauth.ensure_valid_token()
 
+    def login_headless(self) -> str:
+        """Headless OAuth for VPS / bot. Prints URL, prompts for callback."""
+        return self._oauth.authorize_headless()
+
     def logout(self) -> None:
         self._oauth.revoke()
 
@@ -84,8 +88,12 @@ class WhoopService:
         params = self._date_params(start, end)
         data = await self._client.get(endpoints.SLEEP, params=params)
         records = data.get("records", []) if isinstance(data, dict) else data
+        if not records:
+            return None
+        # Prefer non-nap records if nap field exists; otherwise take first scored
         mains = [r for r in records if not r.get("nap", False)]
-        return mains[0] if mains else (records[0] if records else None)
+        scored = [r for r in (mains or records) if r.get("score_state") == "SCORED"]
+        return scored[0] if scored else (mains[0] if mains else records[0])
 
     async def get_workouts(self, start: str | None = None, end: str | None = None) -> list[dict]:
         params = self._date_params(start, end)
@@ -128,7 +136,8 @@ class WhoopService:
         # Build lookup tables: date -> first matching record
         recovery_by_date: dict[str, dict] = {}
         for r in all_recoveries:
-            d = (r.get("start") or r.get("created_at") or "")[:10]
+            # Recovery records may have created_at or updated_at, not start
+            d = (r.get("created_at") or r.get("start") or r.get("updated_at") or "")[:10]
             if d and d not in recovery_by_date:
                 recovery_by_date[d] = r
 
@@ -136,7 +145,8 @@ class WhoopService:
         for s in all_sleeps:
             if s.get("nap"):
                 continue
-            d = (s.get("start") or "")[:10]
+            # Sleep records may have created_at instead of start
+            d = (s.get("created_at") or s.get("start") or "")[:10]
             if d and d not in sleep_by_date:
                 sleep_by_date[d] = s
 

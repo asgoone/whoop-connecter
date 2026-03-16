@@ -182,9 +182,9 @@ def trends(
 
 @app.command()
 def auth(
-    action: str = typer.Argument("status", help="status | login | logout"),
+    action: str = typer.Argument("status", help="status | login | login-headless | logout"),
 ):
-    """Manage WHOOP OAuth token (status / login / logout)."""
+    """Manage WHOOP OAuth token (status / login / login-headless / logout)."""
     service = _get_service()
 
     if action == "status":
@@ -201,8 +201,13 @@ def auth(
             console.print("[red]Not authenticated.[/red] Run: whoop auth login")
 
     elif action == "login":
-        console.print("Starting OAuth flow...")
+        console.print("Starting OAuth flow (browser)...")
         token = service.login()
+        console.print("[green]Authentication successful.[/green]")
+
+    elif action == "login-headless":
+        console.print("Starting headless OAuth flow (for VPS / bot)...")
+        token = service.login_headless()
         console.print("[green]Authentication successful.[/green]")
 
     elif action == "logout":
@@ -210,8 +215,40 @@ def auth(
         console.print("[yellow]Logged out. Token cleared.[/yellow]")
 
     else:
-        console.print(f"[red]Unknown action:[/red] {action}. Use: status, login, logout")
+        console.print(f"[red]Unknown action:[/red] {action}. Use: status, login, login-headless, logout")
         raise typer.Exit(1)
+
+
+@app.command()
+def raw(
+    endpoint: str = typer.Argument(..., help="profile | recovery | sleep | workouts | cycles"),
+    start: Optional[str] = typer.Option(None, "--start"),
+    end: Optional[str] = typer.Option(None, "--end"),
+):
+    """Dump raw WHOOP API response for debugging."""
+    service = _get_service()
+
+    async def _fetch():
+        try:
+            if endpoint == "profile":
+                return await service.get_profile()
+            elif endpoint == "recovery":
+                return await service.get_recovery(start=start, end=end)
+            elif endpoint == "sleep":
+                return await service.get_sleep(start=start, end=end)
+            elif endpoint == "workouts":
+                return await service.get_workouts(start=start, end=end)
+            elif endpoint == "cycles":
+                return await service.get_cycles(start=start, end=end)
+            else:
+                console.print(f"[red]Unknown endpoint:[/red] {endpoint}")
+                console.print("Available: profile, recovery, sleep, workouts, cycles")
+                raise typer.Exit(1)
+        finally:
+            await service.aclose()
+
+    result = _run(_fetch())
+    console.print_json(json.dumps(result, indent=2, default=str))
 
 
 if __name__ == "__main__":

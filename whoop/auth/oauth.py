@@ -115,6 +115,75 @@ class WhoopOAuth:
             "expired": now >= tokens.expires_at,
         }
 
+    def authorize_headless(self) -> str:
+        """Headless OAuth: prints auth URL, accepts callback URL from stdin.
+
+        Designed for VPS / bot usage where no browser is available.
+        Returns the access token.
+        """
+        auth_url, state, code_verifier = self.get_auth_url()
+
+        print("\n=== WHOOP OAuth (headless) ===")
+        print("Open this URL in your browser:\n")
+        print(auth_url)
+        print(f"\nAfter authorizing, your browser will redirect to a URL like:")
+        print(f"  {self._config.redirect_uri}?code=...&state=...")
+        print("Copy the FULL redirect URL and paste it below.\n")
+
+        callback_url = input("Callback URL: ").strip()
+        if not callback_url:
+            raise RuntimeError("No callback URL provided")
+
+        return self.exchange_callback(callback_url, state, code_verifier)
+
+    def get_auth_url(self) -> tuple[str, str, str]:
+        """Generate OAuth URL and PKCE params for external use (e.g. bot).
+
+        Returns (auth_url, state, code_verifier) — caller must store
+        state and code_verifier to complete the flow via exchange_callback().
+        """
+        code_verifier = secrets.token_urlsafe(64)
+        code_challenge = (
+            base64.urlsafe_b64encode(
+                hashlib.sha256(code_verifier.encode()).digest()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
+
+        state = secrets.token_urlsafe(16)
+        auth_url = WHOOP_AUTH_URL + "?" + urlencode({
+            "response_type": "code",
+            "client_id": self._config.client_id,
+            "redirect_uri": self._config.redirect_uri,
+            "scope": SCOPES,
+            "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        })
+        return auth_url, state, code_verifier
+
+    def exchange_callback(self, callback_url: str, expected_state: str, code_verifier: str) -> str:
+        """Complete OAuth by parsing a callback URL. For bot/external integrations.
+
+        Returns the access token.
+        """
+        parsed = urllib.parse.urlparse(callback_url)
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+
+        received_state = params.get("state")
+        if received_state != expected_state:
+            raise RuntimeError(
+                f"State mismatch. Expected={expected_state}, got={received_state}"
+            )
+
+        code = params.get("code")
+        if not code:
+            error = params.get("error_description", params.get("error", "unknown"))
+            raise RuntimeError(f"OAuth error: {error}")
+
+        return self._exchange_code(code, code_verifier)
+
     def revoke(self) -> None:
         self._store.clear()
 

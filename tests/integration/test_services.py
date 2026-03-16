@@ -1,6 +1,7 @@
 """
 Integration tests for WhoopService — API client mocked.
 Tests orchestration: data fetching, schema mapping, analytics.
+Uses real flat API format.
 """
 
 import pytest
@@ -12,22 +13,64 @@ from whoop.api.client import WhoopClient
 pytestmark = pytest.mark.asyncio
 
 
-def _make_recovery_raw(score=70.0, hrv=55.0, rhr=58):
-    return {"score": {"recovery_score": score, "hrv_rmssd_milli": hrv, "resting_heart_rate": rhr}}
+def _make_recovery_raw(score=70, hrv=55.0, rhr=58):
+    """Real flat API format."""
+    return {
+        "cycle_id": 123,
+        "score_state": "SCORED",
+        "recovery_score": score,
+        "hrv_rmssd_milli": hrv,
+        "resting_heart_rate": rhr,
+        "spo2_percentage": 97.0,
+        "skin_temp_celsius": 0.0,
+        "created_at": "2026-03-17T06:00:00Z",
+    }
 
 
-def _make_sleep_raw(score=82, nap=False, start="2026-03-17T00:00:00Z", end="2026-03-17T07:30:00Z"):
-    return {"nap": nap, "start": start, "end": end,
-            "score": {"sleep_performance_percentage": score, "sleep_efficiency_percentage": 91.0}}
+def _make_sleep_raw(score=82, score_state="SCORED",
+                    created_at="2026-03-17T00:00:00Z"):
+    """Real flat API format — no nap field, no start/end."""
+    return {
+        "id": 456,
+        "score_state": score_state,
+        "sleep_performance_percentage": score,
+        "sleep_efficiency_percentage": 91.0,
+        "total_in_bed_time_milli": 27000000,
+        "total_awake_time_milli": 1800000,
+        "total_light_sleep_time_milli": 13000000,
+        "total_slow_wave_sleep_time_milli": 5000000,
+        "total_rem_sleep_time_milli": 4000000,
+        "sleep_cycle_count": 5,
+        "created_at": created_at,
+    }
 
 
 def _make_cycle_raw(date="2026-03-17", strain=10.5):
-    return {"start": f"{date}T06:00:00Z", "score": {"strain": strain, "kilojoule": 8000}}
+    """Real flat API format."""
+    return {
+        "id": 789,
+        "start": f"{date}T19:20:00.000Z",
+        "end": f"{date}T04:35:00.000Z",
+        "score_state": "SCORED",
+        "strain": strain,
+        "kilojoule": 8000,
+        "average_heart_rate": 67,
+        "max_heart_rate": 144,
+    }
 
 
 def _make_workout_raw():
-    return {"sport_id": 0, "start": "2026-03-17T08:00:00Z", "end": "2026-03-17T09:00:00Z",
-            "score": {"strain": 12.0, "average_heart_rate": 145, "max_heart_rate": 178, "kilojoule": 2000}}
+    return {
+        "sport_id": 0,
+        "start": "2026-03-17T08:00:00Z",
+        "end": "2026-03-17T09:00:00Z",
+        "score": {
+            "strain": 12.0,
+            "average_heart_rate": 145,
+            "max_heart_rate": 178,
+            "kilojoule": 2000,
+        },
+    }
 
 
 @pytest.fixture
@@ -53,10 +96,10 @@ def service(mock_client, mock_oauth):
 class TestGetRecovery:
     async def test_returns_first_record(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={
-            "records": [_make_recovery_raw(score=74.0), _make_recovery_raw(score=60.0)]
+            "records": [_make_recovery_raw(score=74), _make_recovery_raw(score=60)]
         })
         result = await service.get_recovery()
-        assert result["score"]["recovery_score"] == 74.0
+        assert result["recovery_score"] == 74
 
     async def test_empty_records_returns_none(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={"records": []})
@@ -72,29 +115,29 @@ class TestGetRecovery:
     async def test_no_date_params_sends_none(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={"records": []})
         await service.get_recovery()
-        # When both start and end are None, _date_params returns None → get is called with params=None
         call_kwargs = mock_client.get.call_args.kwargs
         assert call_kwargs.get("params") is None
 
 
 class TestGetSleep:
-    async def test_returns_main_sleep_not_nap(self, service, mock_client):
+    async def test_returns_first_scored_record(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={
             "records": [
-                _make_sleep_raw(score=40, nap=True),   # нужно пропустить
-                _make_sleep_raw(score=82, nap=False),  # взять этот
+                _make_sleep_raw(score=82, score_state="SCORED"),
             ]
         })
         result = await service.get_sleep()
-        assert result["score"]["sleep_performance_percentage"] == 82
+        assert result["sleep_performance_percentage"] == 82
 
-    async def test_all_naps_returns_first(self, service, mock_client):
-        """Если все — nap, возвращаем первый (не None)."""
+    async def test_prefers_scored_over_pending(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={
-            "records": [_make_sleep_raw(score=50, nap=True)]
+            "records": [
+                _make_sleep_raw(score=40, score_state="PENDING_SCORE"),
+                _make_sleep_raw(score=82, score_state="SCORED"),
+            ]
         })
         result = await service.get_sleep()
-        assert result is not None
+        assert result["sleep_performance_percentage"] == 82
 
     async def test_empty_records_returns_none(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={"records": []})
@@ -105,12 +148,12 @@ class TestGetSleep:
 class TestGetDailySummary:
     async def test_full_data_summary(self, service, mock_client):
         mock_client.get = AsyncMock(side_effect=[
-            {"records": [_make_recovery_raw(score=74.0)]},   # recovery
-            {"records": [_make_sleep_raw(score=82)]},        # sleep
+            {"records": [_make_recovery_raw(score=74)]},
+            {"records": [_make_sleep_raw(score=82)]},
         ])
         mock_client.get_paginated = AsyncMock(side_effect=[
-            [_make_workout_raw()],   # workouts
-            [_make_cycle_raw()],     # cycles
+            [_make_workout_raw()],
+            [_make_cycle_raw()],
         ])
         summary = await service.get_daily_summary(date="2026-03-17")
         assert summary.recovery_score == 74
@@ -127,7 +170,6 @@ class TestGetDailySummary:
     async def test_date_defaults_to_today(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={"records": []})
         mock_client.get_paginated = AsyncMock(return_value=[])
-        # Не должно бросить исключение
         summary = await service.get_daily_summary(date=None)
         assert summary is not None
 
@@ -137,11 +179,12 @@ class TestGetTrends:
         cycles = [_make_cycle_raw(date=f"2026-03-{10+i:02d}") for i in range(n_days)]
         recoveries = [
             {**_make_recovery_raw(score=base_score + i),
-             "start": f"2026-03-{10+i:02d}T06:00:00Z"}
+             "created_at": f"2026-03-{10+i:02d}T06:00:00Z"}
             for i in range(n_days)
         ]
         sleeps = [
-            {**_make_sleep_raw(score=80), "start": f"2026-03-{10+i:02d}T00:00:00Z"}
+            {**_make_sleep_raw(score=80),
+             "created_at": f"2026-03-{10+i:02d}T00:00:00Z"}
             for i in range(n_days)
         ]
         mock_client.get_paginated = AsyncMock(side_effect=[cycles, recoveries, sleeps])
@@ -156,9 +199,9 @@ class TestGetTrends:
 
     async def test_days_boundary_values_accepted(self, service, mock_client):
         mock_client.get_paginated = AsyncMock(return_value=[])
-        await service.get_trends(days=1)   # min
+        await service.get_trends(days=1)
         mock_client.get_paginated = AsyncMock(return_value=[])
-        await service.get_trends(days=90)  # max
+        await service.get_trends(days=90)
 
     async def test_returns_trend_report(self, service, mock_client):
         await self._make_trends_data(mock_client, n_days=7)
@@ -167,29 +210,18 @@ class TestGetTrends:
         assert len(report.metrics) == 5
 
     async def test_three_parallel_requests(self, service, mock_client):
-        """get_trends должен делать ровно 3 вызова get_paginated."""
+        """get_trends should make exactly 3 get_paginated calls."""
         mock_client.get_paginated = AsyncMock(return_value=[])
         await service.get_trends(days=7)
         assert mock_client.get_paginated.call_count == 3
 
     async def test_cycles_without_matching_recovery(self, service, mock_client):
-        """Цикл без соответствующего recovery — recovery=None, не падает."""
         cycles = [_make_cycle_raw(date="2026-03-17")]
         mock_client.get_paginated = AsyncMock(side_effect=[cycles, [], []])
         report = await service.get_trends(days=1)
         assert report.days == 1
         rec_trend = next(m for m in report.metrics if m.metric == "recovery_score")
         assert rec_trend.direction == "N/A"
-
-    async def test_sleep_naps_excluded_from_lookup(self, service, mock_client):
-        cycles = [_make_cycle_raw(date="2026-03-17")]
-        recoveries = [{**_make_recovery_raw(), "start": "2026-03-17T06:00:00Z"}]
-        sleeps = [_make_sleep_raw(nap=True, start="2026-03-17T14:00:00Z")]  # только nap
-        mock_client.get_paginated = AsyncMock(side_effect=[cycles, recoveries, sleeps])
-        report = await service.get_trends(days=1)
-        sleep_trend = next(m for m in report.metrics if m.metric == "sleep_score")
-        # Nap исключён → нет sleep данных → N/A
-        assert sleep_trend.direction == "N/A"
 
 
 class TestAuthStatus:

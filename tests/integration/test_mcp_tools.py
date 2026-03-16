@@ -126,9 +126,16 @@ class TestRecoveryTool:
         data = json.loads(text)
         assert "error" in data
 
-    async def test_with_data_returns_score(self, server, mock_service):
-        from whoop.schema.mappers import map_recovery
-        raw = {"score": {"recovery_score": 74.0, "hrv_rmssd_milli": 55.0, "resting_heart_rate": 58}}
+    async def test_with_flat_data_returns_score(self, server, mock_service):
+        """Test with real flat API format."""
+        raw = {
+            "score_state": "SCORED",
+            "recovery_score": 74,
+            "hrv_rmssd_milli": 55.0,
+            "resting_heart_rate": 58,
+            "spo2_percentage": 97.0,
+            "skin_temp_celsius": 0.0,
+        }
         mock_service.get_recovery = AsyncMock(return_value=raw)
         text = await _call(server, "get_recovery")
         data = json.loads(text)
@@ -147,9 +154,15 @@ class TestSleepTool:
         data = json.loads(text)
         assert "error" in data
 
-    async def test_with_data_returns_score(self, server, mock_service):
-        raw = {"start": "2026-03-17T00:00:00Z", "end": "2026-03-17T07:30:00Z",
-               "score": {"sleep_performance_percentage": 85, "sleep_efficiency_percentage": 91.0}}
+    async def test_with_flat_data_returns_score(self, server, mock_service):
+        """Test with real flat API format."""
+        raw = {
+            "score_state": "SCORED",
+            "sleep_performance_percentage": 85,
+            "sleep_efficiency_percentage": 91.0,
+            "total_in_bed_time_milli": 27000000,
+            "total_light_sleep_time_milli": 13000000,
+        }
         mock_service.get_sleep = AsyncMock(return_value=raw)
         text = await _call(server, "get_sleep")
         data = json.loads(text)
