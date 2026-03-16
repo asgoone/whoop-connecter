@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "whoop": {
+      "command": "/path/to/whoop_connecter/.venv/bin/python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/path/to/whoop_connecter",
+      "env": {
+        "WHOOP_CLIENT_ID": "${WHOOP_CLIENT_ID}",
+        "WHOOP_CLIENT_SECRET": "${WHOOP_CLIENT_SECRET}",
+        "WHOOP_REDIRECT_URI": "http://localhost:8080/callback",
+        "WHOOP_TOKEN_PATH": "~/.whoop/tokens.enc",
+        "WHOOP_TOKEN_ENCRYPTION_KEY": "${WHOOP_TOKEN_ENCRYPTION_KEY}",
+        "WHOOP_CACHE_TTL": "300",
+        "LOG_LEVEL": "WARNING"
+      }
+    }
+  }
+}
