@@ -158,7 +158,7 @@ class TestBuildTrends:
         report = build_trends(records)
         rec_trend = next(m for m in report.metrics if m.metric == "recovery_score")
         assert rec_trend.direction == "↑"
-        assert rec_trend.change_pct > 3
+        assert rec_trend.change_pct == pytest.approx(29.63, abs=0.1)
 
     def test_downward_trend_detected(self):
         records = [
@@ -168,7 +168,7 @@ class TestBuildTrends:
         report = build_trends(records)
         rec_trend = next(m for m in report.metrics if m.metric == "recovery_score")
         assert rec_trend.direction == "↓"
-        assert rec_trend.change_pct < -3
+        assert rec_trend.change_pct == pytest.approx(-24.24, abs=0.1)
 
     def test_stable_trend(self):
         records = [make_daily_health(date=f"2026-03-{10+i:02d}", recovery_score=70) for i in range(6)]
@@ -247,7 +247,8 @@ class TestComputeTrend:
         report = build_trends(records)
         rec = next(m for m in report.metrics if m.metric == "recovery_score")
         # first_half avg = mean([0, 0]) = 0 → no division, direction = →
-        assert rec.direction in ("→", "↑")  # допустимо оба
+        assert rec.direction == "→"
+        assert rec.change_pct == 0.0
 
     def test_2_records_split(self):
         """При 2 записях mid=1: first=[v0], second=[v1]."""

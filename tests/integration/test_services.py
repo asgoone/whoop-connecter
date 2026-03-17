@@ -238,6 +238,39 @@ class TestGetBodyMeasurement:
         mock_client.get.assert_called_once_with(endpoints.BODY_MEASUREMENT)
 
 
+class TestGetExport:
+    async def test_returns_export_dict(self, service, mock_client):
+        body_data = {"height_meter": 1.80, "weight_kilogram": 82.5, "max_heart_rate": 195}
+        mock_client.get = AsyncMock(return_value=body_data)
+
+        cycles = [_make_cycle_raw(date="2026-03-17")]
+        recoveries = [{**_make_recovery_raw(score=74), "created_at": "2026-03-17T06:00:00Z"}]
+        sleeps = [{**_make_sleep_raw(score=82), "created_at": "2026-03-17T00:00:00Z"}]
+        mock_client.get_paginated = AsyncMock(side_effect=[cycles, recoveries, sleeps])
+
+        result = await service.get_export(days=1)
+        assert "body" in result
+        assert "daily" in result
+        assert result["days"] == 1
+        assert result["body"]["height_meter"] == 1.80
+        assert len(result["daily"]) == 1
+
+    async def test_days_validation(self, service, mock_client):
+        with pytest.raises(ValueError, match="days must be between"):
+            await service.get_export(days=0)
+        with pytest.raises(ValueError, match="days must be between"):
+            await service.get_export(days=91)
+
+    async def test_uses_batch_requests(self, service, mock_client):
+        """get_export should use batch (get + get_paginated), not per-day calls."""
+        mock_client.get = AsyncMock(return_value={})
+        mock_client.get_paginated = AsyncMock(return_value=[])
+        await service.get_export(days=7)
+        # 1 get (body) + 3 get_paginated (cycles, recovery, sleep)
+        assert mock_client.get.call_count == 1
+        assert mock_client.get_paginated.call_count == 3
+
+
 class TestAuthStatus:
     def test_delegates_to_oauth(self, service, mock_oauth):
         result = service.auth_status()

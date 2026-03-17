@@ -10,9 +10,10 @@ MCP-сервер и CLI для подключения данных WHOOP к пе
 - [Установка](#установка)
 - [Конфигурация](#конфигурация)
 - [Первый запуск](#первый-запуск)
-- [MCP-инструменты](#mcp-инструменты)
 - [CLI](#cli)
+- [MCP-инструменты](#mcp-инструменты)
 - [Подключение к OpenClaw](#подключение-к-openclaw)
+- [Развёртывание на VPS](#развёртывание-на-vps)
 - [Безопасность](#безопасность)
 - [Ограничения](#ограничения)
 - [Расширение](#расширение)
@@ -24,20 +25,23 @@ MCP-сервер и CLI для подключения данных WHOOP к пе
 Проект даёт персональному агенту Coach (развёрнутому в OpenClaw) доступ к данным WHOOP через протокол MCP. Coach может:
 
 - читать метрики восстановления, сна, нагрузки и HRV;
+- анализировать данные тела (рост, вес, макс. ЧСС) и вычислять BMI;
 - давать рекомендации по тренировкам на основе recovery score;
-- проактивно присылать утренний summary в Telegram через cron;
 - показывать тренды за 7, 14 или 30 дней;
+- экспортировать данные за период в JSON;
 - замечать ухудшения и советовать снизить нагрузку.
+
+Помимо MCP-сервера, проект включает полноценный CLI — удобный для отладки, мониторинга и скриптов.
 
 ---
 
 ## Как это работает
 
 ```
-WHOOP API (OAuth 2.0)
+WHOOP API v2 (OAuth 2.0 + PKCE)
         │
         ▼
-whoop/api/client.py     ← httpx async, TTL кэш 5 мин
+whoop/api/client.py     ← httpx async, TTL кэш 5 мин, auto-retry на 401
         │
         ▼
 whoop/schema/mappers.py ← JSON → unified dataclasses
@@ -48,7 +52,7 @@ whoop/services.py       ← WhoopService (shared core)
       /   \
      ▼     ▼
 mcp_server  cli
-(stdio)     (Typer)
+(stdio)     (Typer + Rich)
      │
      ▼
 OpenClaw Gateway → Coach → Telegram
@@ -56,7 +60,7 @@ OpenClaw Gateway → Coach → Telegram
 
 ### Протокол MCP
 
-Сервер запускается OpenClaw как дочерний процесс. Общение происходит через **stdio** (JSON-RPC по stdin/stdout). Это самый простой и надёжный вариант для локального развёртывания.
+Сервер запускается OpenClaw как дочерний процесс. Общение — через **stdio** (JSON-RPC по stdin/stdout). Это самый простой и надёжный вариант для локального развёртывания.
 
 ### Аутентификация
 
@@ -67,6 +71,8 @@ OpenClaw Gateway → Coach → Telegram
 3. Параметр `state` верифицируется для защиты от CSRF.
 4. Токены шифруются **AES-256-GCM** и сохраняются на диск (`~/.whoop/tokens.enc`).
 5. При следующих запросах токен обновляется автоматически через refresh token.
+
+Для VPS без браузера доступен **headless-режим** — см. [Развёртывание на VPS](#развёртывание-на-vps).
 
 ### Кэширование
 
@@ -80,12 +86,12 @@ OpenClaw Gateway → Coach → Telegram
 whoop_connecter/
 ├── whoop/                    # Shared core — библиотека
 │   ├── auth/
-│   │   ├── oauth.py          # OAuth 2.0 PKCE flow
+│   │   ├── oauth.py          # OAuth 2.0 PKCE flow + headless mode
 │   │   └── token_store.py    # AES-256-GCM хранилище токенов
 │   ├── api/
 │   │   ├── client.py         # httpx async клиент, авто-retry на 401
 │   │   ├── cache.py          # In-memory TTL кэш
-│   │   └── endpoints.py      # Константы WHOOP API endpoints
+│   │   └── endpoints.py      # Константы WHOOP API v2 endpoints
 │   ├── schema/
 │   │   ├── unified.py        # Source-agnostic dataclasses
 │   │   └── mappers.py        # WHOOP JSON → unified schema
@@ -95,26 +101,29 @@ whoop_connecter/
 │   └── services.py           # WhoopService facade
 │
 ├── mcp_server/               # MCP-сервер (stdio)
-│   ├── server.py             # Точка входа, регистрация тулов
-│   └── tools/                # По одному файлу на тул
-│       ├── summary.py
-│       ├── trends.py
-│       ├── recovery.py
-│       ├── sleep.py
-│       ├── workouts.py
-│       ├── cycles.py
-│       ├── profile.py
-│       └── auth_status.py
+│   ├── server.py             # Точка входа, регистрация инструментов
+│   └── tools/                # По одному файлу на инструмент
+│       ├── summary.py        # get_daily_summary
+│       ├── trends.py         # get_trends
+│       ├── recovery.py       # get_recovery
+│       ├── sleep.py          # get_sleep
+│       ├── workouts.py       # get_workouts
+│       ├── cycles.py         # get_cycles
+│       ├── body.py           # get_body_measurement
+│       ├── profile.py        # get_profile
+│       └── auth_status.py    # get_auth_status
 │
 ├── cli/
 │   └── main.py               # CLI (Typer + Rich)
 │
 ├── deploy/
-│   ├── openclaw_mcp_config.json
-│   └── setup_vps.sh
+│   ├── openclaw_mcp_config.json  # Шаблон MCP-конфига для OpenClaw
+│   └── setup_vps.sh              # Скрипт развёртывания на VPS
 │
+├── tests/                    # 188 тестов (unit + integration)
 ├── .env.example
-└── pyproject.toml
+├── pyproject.toml
+└── README.md
 ```
 
 ---
@@ -125,61 +134,63 @@ whoop_connecter/
 
 - Python 3.10+
 - Аккаунт разработчика WHOOP: [developer.whoop.com](https://developer.whoop.com)
-- OpenClaw + Coach, развёрнутые на VPS
 
 ### Шаги
 
 ```bash
 # 1. Клонировать репозиторий
-git clone <repo-url> whoop_connecter
-cd whoop_connecter
+git clone https://github.com/asgoone/whoop-connecter.git
+cd whoop-connecter
 
 # 2. Создать виртуальное окружение
 python3 -m venv .venv
-source .venv/bin/activate  # Linux/macOS
+source .venv/bin/activate
 
 # 3. Установить зависимости
 pip install -e .
 ```
 
+После установки доступны две команды:
+
+| Команда | Описание |
+|---------|----------|
+| `whoop` | CLI для работы с данными WHOOP |
+| `whoop-mcp` | MCP-сервер (stdio) для OpenClaw |
+
 ---
 
 ## Конфигурация
 
-Скопируйте `.env.example` в `.env` и заполните:
+### 1. Создать `.env`
 
 ```bash
 cp .env.example .env
 ```
+
+### 2. Заполнить параметры
 
 ```dotenv
 # Обязательно — из developer.whoop.com
 WHOOP_CLIENT_ID=ваш_client_id
 WHOOP_CLIENT_SECRET=ваш_client_secret
 
-# URI должен совпадать с тем, что указан в WHOOP Developer Dashboard
+# Ключ шифрования токенов (генерируется один раз)
+WHOOP_TOKEN_ENCRYPTION_KEY=ваш_64_символьный_hex
+
+# Опционально
 WHOOP_REDIRECT_URI=http://localhost:8080/callback
-
-# Путь для хранения зашифрованных токенов
 WHOOP_TOKEN_PATH=~/.whoop/tokens.enc
-
-# TTL кэша в секундах (по умолчанию 5 минут)
 WHOOP_CACHE_TTL=300
+LOG_LEVEL=WARNING
 ```
 
-### Генерация ключа шифрования
-
-Ключ шифрования токенов **не хранится в `.env`** — он задаётся отдельно, чтобы не попасть в git:
+### 3. Сгенерировать ключ шифрования
 
 ```bash
-# Сгенерировать ключ
 python3 -c "import secrets; print(secrets.token_hex(32))"
-
-# Добавить в окружение (или в .env, если файл в .gitignore)
-export WHOOP_TOKEN_ENCRYPTION_KEY=ваш_64_символьный_hex
 ```
 
-### Переменные окружения — полный список
+### Полный список переменных окружения
 
 | Переменная | Обязательна | По умолчанию | Описание |
 |---|---|---|---|
@@ -198,10 +209,16 @@ export WHOOP_TOKEN_ENCRYPTION_KEY=ваш_64_символьный_hex
 ### 1. Авторизация
 
 ```bash
+# С браузером (локальная машина)
 whoop auth login
+
+# Без браузера (VPS, сервер)
+whoop auth login-headless
 ```
 
-Откроется браузер. Войдите в WHOOP и разрешите доступ. Токены автоматически сохранятся в зашифрованном виде.
+При `login` откроется браузер. Войдите в WHOOP и разрешите доступ. Токены автоматически сохранятся в зашифрованном виде.
+
+При `login-headless` в терминале появится URL — откройте его в браузере на любом устройстве, авторизуйтесь и вставьте callback URL обратно в терминал.
 
 ### 2. Проверка
 
@@ -216,20 +233,119 @@ whoop summary
 
 ---
 
+## CLI
+
+CLI использует тот же `WhoopService`, что и MCP-сервер — никакого дублирования логики.
+
+### Команды
+
+#### `whoop summary` — дневной отчёт
+
+```bash
+whoop summary                     # сегодня
+whoop summary --date 2026-03-15   # конкретная дата
+whoop summary --raw               # JSON
+```
+
+#### `whoop recovery` — метрики восстановления
+
+```bash
+whoop recovery
+whoop recovery --start 2026-03-10T00:00:00Z --end 2026-03-17T23:59:59Z
+whoop recovery --raw
+```
+
+Показывает: recovery score, HRV (RMSSD), resting HR, SpO2.
+
+#### `whoop sleep` — данные сна
+
+```bash
+whoop sleep
+whoop sleep --raw
+```
+
+Показывает: sleep score, duration, efficiency, respiratory rate, sleep consistency, sleep needed (baseline).
+
+#### `whoop body` — измерения тела
+
+```bash
+whoop body
+whoop body --raw
+```
+
+Показывает: рост, вес, макс. ЧСС, BMI (вычисляется автоматически).
+
+#### `whoop trends` — тренды за период
+
+```bash
+whoop trends              # 7 дней
+whoop trends --days 30    # 30 дней
+whoop trends --raw
+```
+
+Показывает 5 метрик с направлением (↑↓→) и процентом изменения.
+
+#### `whoop export` — экспорт данных
+
+```bash
+whoop export                           # 7 дней → stdout
+whoop export --days 30                 # 30 дней
+whoop export --days 14 --output data.json  # в файл
+```
+
+Экспортирует body + N дней daily health (sleep, recovery, activity) в JSON. Использует batch-запросы (4 HTTP-вызова независимо от количества дней).
+
+#### `whoop auth` — управление авторизацией
+
+```bash
+whoop auth status          # проверить статус токена
+whoop auth login           # авторизация через браузер
+whoop auth login-headless  # авторизация без браузера (VPS)
+whoop auth logout          # удалить токен
+```
+
+`auth status` автоматически пробует обновить токен, если он истёк, и показывает актуальный статус.
+
+#### `whoop raw` — сырые данные API (отладка)
+
+```bash
+whoop raw profile
+whoop raw body
+whoop raw recovery --start 2026-03-10T00:00:00Z
+whoop raw sleep
+whoop raw workouts
+whoop raw cycles
+```
+
+Выводит необработанный JSON-ответ WHOOP API — полезно для отладки и изучения формата данных.
+
+### Флаг `--raw`
+
+Все команды поддерживают `--raw` для вывода чистого JSON — удобно для скриптов:
+
+```bash
+whoop summary --raw | jq '.recovery_score'
+whoop sleep --raw | jq '.sleep_needed'
+```
+
+---
+
 ## MCP-инструменты
 
-MCP-сервер предоставляет 8 инструментов. Coach обращается к ним по имени.
+MCP-сервер предоставляет **9 инструментов**. Coach обращается к ним по имени.
 
 ### `get_daily_summary`
 
 Агрегированный summary за день. Основной инструмент для утреннего briefing.
 
 **Параметры:**
+
 | Параметр | Тип | Обязателен | Описание |
 |---|---|---|---|
-| `date` | string | Нет | Дата в формате `YYYY-MM-DD`. По умолчанию — сегодня. |
+| `date` | string | Нет | Дата `YYYY-MM-DD`. По умолчанию — сегодня. |
 
 **Пример ответа:**
+
 ```json
 {
   "date": "2026-03-17",
@@ -248,8 +364,8 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 
 | Recovery score | Цвет | Рекомендация |
 |---|---|---|
-| ≥ 67 | 🟢 | Полная нагрузка |
-| 34–66 | 🟡 | Умеренная нагрузка |
+| >= 67 | 🟢 | Полная нагрузка |
+| 34-66 | 🟡 | Умеренная нагрузка |
 | < 34 | 🔴 | Только отдых или лёгкая активность |
 | нет данных | ⚪ | Нет данных |
 
@@ -260,25 +376,12 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 Тренды метрик за последние N дней.
 
 **Параметры:**
+
 | Параметр | Тип | Обязателен | Описание |
 |---|---|---|---|
-| `days` | integer | Нет | Количество дней (1–90). По умолчанию `7`. |
+| `days` | integer | Нет | Количество дней (1-90). По умолчанию `7`. |
 
-**Пример ответа:**
-```json
-{
-  "days": 7,
-  "from_date": "2026-03-10",
-  "to_date": "2026-03-17",
-  "metrics": [
-    {"metric": "recovery_score", "average": 68.5, "direction": "↑", "change_pct": 8.2},
-    {"metric": "sleep_score",    "average": 81.0, "direction": "→", "change_pct": 1.1},
-    {"metric": "hrv_rmssd",      "average": 57.3, "direction": "↑", "change_pct": 5.7},
-    {"metric": "resting_hr",     "average": 56.0, "direction": "↓", "change_pct": -3.6},
-    {"metric": "strain",         "average": 10.2, "direction": "↑", "change_pct": 12.0}
-  ]
-}
-```
+**Метрики:** `recovery_score`, `sleep_score`, `hrv_rmssd`, `resting_hr`, `strain`.
 
 **Направление тренда:** вычисляется как изменение среднего между первой и второй половиной периода. `↑` — рост > 3%, `↓` — падение > 3%, `→` — стабильно.
 
@@ -288,7 +391,7 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 
 Метрики восстановления за период.
 
-**Параметры:** `start`, `end` — ISO datetime (например `2026-03-17T00:00:00.000Z`). Необязательны, по умолчанию — сегодня.
+**Параметры:** `start`, `end` — ISO datetime. Необязательны.
 
 **Возвращает:** `score`, `hrv_rmssd`, `resting_hr`, `spo2`, `skin_temp_deviation`.
 
@@ -300,7 +403,7 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 
 **Параметры:** `start`, `end`.
 
-**Возвращает:** `score`, `duration_hours`, `efficiency`, `stages`.
+**Возвращает:** `score`, `duration_hours`, `efficiency`, `stages`, `respiratory_rate`, `sleep_consistency`, `sleep_needed` (baseline/debt/strain/nap millis).
 
 ---
 
@@ -310,7 +413,7 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 
 **Параметры:** `start`, `end`.
 
-**Возвращает:** массив объектов с полями `sport`, `strain`, `duration_minutes`, `avg_hr`, `max_hr`, `calories`, `started_at`.
+**Возвращает:** массив объектов с полями `sport`, `strain`, `duration_minutes`, `avg_hr`, `max_hr`, `calories`, `started_at`, `distance_meter`, `altitude_gain_meter`, `percent_recorded`, `zone_durations`.
 
 ---
 
@@ -322,6 +425,24 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 
 ---
 
+### `get_body_measurement`
+
+Измерения тела пользователя.
+
+**Параметры:** нет.
+
+**Возвращает:**
+
+```json
+{
+  "height_meter": 1.80,
+  "weight_kilogram": 82.5,
+  "max_heart_rate": 195
+}
+```
+
+---
+
 ### `get_profile`
 
 Профиль пользователя: имя, email, user_id.
@@ -330,9 +451,10 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 
 ### `get_auth_status`
 
-Статус OAuth-токена.
+Статус OAuth-токена. Автоматически пытается обновить токен, если он истёк.
 
 **Возвращает:**
+
 ```json
 {
   "authenticated": true,
@@ -343,52 +465,11 @@ MCP-сервер предоставляет 8 инструментов. Coach о
 
 ---
 
-## CLI
-
-CLI использует тот же `WhoopService`, что и MCP-сервер — никакого дублирования логики.
-
-### Команды
-
-```bash
-# Дневной summary
-whoop summary
-whoop summary --date 2026-03-15
-whoop summary --raw          # JSON-вывод
-
-# Восстановление
-whoop recovery
-whoop recovery --start 2026-03-10T00:00:00Z --end 2026-03-17T23:59:59Z
-
-# Сон
-whoop sleep
-whoop sleep --raw
-
-# Тренды
-whoop trends              # 7 дней
-whoop trends --days 30
-whoop trends --raw
-
-# Аутентификация
-whoop auth status
-whoop auth login
-whoop auth logout
-```
-
-### Флаг `--raw`
-
-Все команды поддерживают `--raw` для вывода чистого JSON — удобно для скриптов и отладки:
-
-```bash
-whoop summary --raw | jq '.recovery_score'
-```
-
----
-
 ## Подключение к OpenClaw
 
 ### 1. Заполнить пути в конфиге
 
-Отредактируйте `deploy/openclaw_mcp_config.json`:
+Отредактируйте `deploy/openclaw_mcp_config.json`, заменив пути и credentials:
 
 ```json
 {
@@ -413,22 +494,82 @@ whoop summary --raw | jq '.recovery_score'
 
 ### 2. Добавить конфиг в OpenClaw
 
-Добавьте секцию `whoop` в MCP-конфигурацию OpenClaw (путь зависит от версии — см. документацию OpenClaw).
+Добавьте секцию `whoop` в MCP-конфигурацию вашей инсталляции OpenClaw. Конкретный путь к конфигу зависит от версии — см. документацию OpenClaw.
 
-### 3. Настроить cron для утреннего summary
+### 3. Проверить
 
-Пример: Coach вызывает `get_daily_summary` каждый день в 08:00.
+После добавления конфига Coach должен видеть 9 WHOOP-инструментов. Попросите Coach: _«Покажи мой recovery за сегодня»_ — он вызовет `get_daily_summary` или `get_recovery`.
+
+### 4. Настроить proactive summary (опционально)
+
+Пример cron-задачи для утреннего summary в 08:00:
+
+```bash
+0 8 * * * cd /home/user/whoop_connecter && \
+  .venv/bin/whoop summary --raw 2>/dev/null | \
+  curl -s -X POST "https://your-webhook-url" \
+    -H "Content-Type: application/json" \
+    -d @-
+```
+
+> **Примечание:** Конкретный способ доставки summary в Telegram зависит от архитектуры вашего Coach. Это может быть webhook, cron → OpenClaw API, или scheduled task внутри Coach.
+
+---
+
+## Развёртывание на VPS
+
+### Быстрый старт
+
+```bash
+# 1. Клонировать и установить
+git clone https://github.com/asgoone/whoop-connecter.git
+cd whoop-connecter
+bash deploy/setup_vps.sh
+
+# 2. Сохранить ключ шифрования, который вывел скрипт!
+
+# 3. Создать .env
+cp .env.example .env
+nano .env   # заполнить CLIENT_ID, CLIENT_SECRET, ENCRYPTION_KEY
+
+# 4. Создать директорию для токенов
+mkdir -p ~/.whoop
+chmod 700 ~/.whoop
+
+# 5. Авторизация (headless — без браузера)
+.venv/bin/whoop auth login-headless
+# → Скрипт покажет URL. Откройте его в браузере на другом устройстве,
+#   авторизуйтесь, скопируйте URL редиректа и вставьте в терминал.
+
+# 6. Проверить
+.venv/bin/whoop auth status
+.venv/bin/whoop summary
+```
+
+### Headless OAuth flow
+
+На VPS нет браузера, поэтому используется headless-режим:
+
+1. Запустите `whoop auth login-headless`.
+2. В терминале появится URL авторизации.
+3. Откройте этот URL **в браузере на любом устройстве** (телефон, ноутбук).
+4. Авторизуйтесь в WHOOP.
+5. Браузер перенаправит на `localhost:8080/callback?code=...&state=...` — скопируйте **полный URL** из адресной строки.
+6. Вставьте URL в терминал VPS.
+7. Токены сохраняются, далее обновление происходит автоматически.
+
+> **Важно:** Redirect на `localhost:8080` не сработает в браузере на другом устройстве — это нормально. Просто скопируйте URL из адресной строки, даже если страница не загрузилась.
+
+### Структура файлов на VPS
 
 ```
-0 8 * * * /home/user/whoop_connecter/.venv/bin/python -c \
-  "import asyncio; from dotenv import load_dotenv; load_dotenv('/home/user/whoop_connecter/.env'); \
-   from whoop.services import _build_service_from_env; \
-   s = _build_service_from_env(); \
-   r = asyncio.run(s.get_daily_summary()); \
-   print(r.format_line())"
+/home/user/
+├── whoop_connecter/          # Репозиторий
+│   ├── .venv/                # Виртуальное окружение
+│   └── .env                  # Credentials (chmod 600)
+└── .whoop/
+    └── tokens.enc            # Зашифрованные токены (chmod 600)
 ```
-
-> **Примечание:** Конкретный способ настройки проактивных сообщений зависит от того, как в вашей инсталляции OpenClaw работает cron-интеграция.
 
 ---
 
@@ -444,14 +585,12 @@ whoop summary --raw | jq '.recovery_score'
 | Секреты в конфиге OpenClaw | Передавать через переменные окружения, не хардкодить в JSON |
 | Медицинский авторитет | Coach **не ставит диагнозы**. При плохих метриках рекомендует снизить нагрузку или обратиться к врачу. |
 
-### Что добавить в `.gitignore`
+### `.gitignore` включает
 
-```gitignore
-.env
-.venv/
-__pycache__/
-*.pyc
-~/.whoop/
+```
+.env           # Credentials
+*.enc          # Зашифрованные токены
+.venv/         # Виртуальное окружение
 ```
 
 ---
@@ -460,16 +599,16 @@ __pycache__/
 
 ### Функциональные
 
-- **OAuth требует браузера.** Первая авторизация (`whoop auth login`) должна выполняться в среде с GUI или с возможностью открыть URL вручную. На headless VPS — открыть ссылку на своём компьютере, но callback должен быть доступен на VPS (нужен проброс порта или выполнить `login` локально с тем же `WHOOP_TOKEN_PATH`).
 - **Данные только от WHOOP.** Другие источники (Oura, Apple Health) не поддерживаются в текущей версии, но архитектура подготовлена к расширению через `unified schema`.
 - **Кэш сбрасывается при рестарте сервера.** Используется in-memory кэш, данные не переживают перезапуск процесса.
 - **Исторические данные ограничены API.** WHOOP API не гарантирует данные старше 1 года.
+- **WHOOP API не предоставляет**: возраст, дату рождения, биологический возраст, WHOOP-возраст, уровень стресса.
 
 ### Технические
 
 - **Python 3.10+** — обязательно (используется синтаксис `X | Y` для типов).
-- **`get_trends` с `days > 30`** — может быть медленнее из-за большого объёма данных от WHOOP API (до ~90 циклов × 2 paginated запроса аггрегации).
 - **Один MCP-сервер на процесс** — при нескольких одновременных запросах от Coach они обрабатываются последовательно (MCP stdio однопоточный).
+- **`get_trends` / `export` с `days > 30`** — медленнее из-за большого объёма данных, но используют batch-запросы (3-4 HTTP-вызова независимо от N).
 
 ---
 
@@ -480,6 +619,7 @@ __pycache__/
 1. Создать файл `mcp_server/tools/my_tool.py`:
 
 ```python
+import json
 from mcp.types import Tool
 from whoop.services import WhoopService
 
@@ -499,7 +639,7 @@ async def handle(arguments: dict, service: WhoopService) -> str:
     return json.dumps(result)
 ```
 
-2. Добавить модуль в `_TOOL_MODULES` в `mcp_server/server.py`.
+2. Добавить импорт в `mcp_server/server.py` и модуль в `_TOOL_MODULES`.
 
 ### Добавление нового источника данных (Oura, Apple Health)
 
@@ -509,12 +649,29 @@ async def handle(arguments: dict, service: WhoopService) -> str:
 
 ### Отладка
 
-Включить детальное логирование:
-
 ```bash
+# Детальное логирование CLI
 LOG_LEVEL=DEBUG whoop summary
-# или для MCP-сервера:
+
+# Детальное логирование MCP-сервера
 LOG_LEVEL=DEBUG whoop-mcp
+
+# Сырые данные API (минуя маппинг)
+whoop raw recovery
+whoop raw sleep --start 2026-03-10T00:00:00Z
 ```
 
 Логи MCP-сервера идут в **stderr**, stdout зарезервирован для протокола MCP.
+
+### Тесты
+
+```bash
+# Запустить все тесты (188 штук)
+.venv/bin/python -m pytest tests/ -v
+
+# Только unit-тесты
+.venv/bin/python -m pytest tests/unit/ -v
+
+# Только интеграционные
+.venv/bin/python -m pytest tests/integration/ -v
+```

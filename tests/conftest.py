@@ -44,16 +44,18 @@ def make_recovery_nested(score=70.0, hrv=55.0, rhr=58, spo2=97.0):
 
 def make_sleep(score=82, efficiency=91.0, in_bed_ms=28440000,
                light_ms=13320000, sws_ms=4860000, rem_ms=4320000,
-               awake_ms=1800000, score_state="SCORED"):
+               awake_ms=1800000, score_state="SCORED",
+               respiratory_rate=14.6, sleep_consistency=76,
+               sleep_needed=None):
     """Build a sleep record matching the real WHOOP API flat format."""
-    return {
+    data = {
         "id": 2234567890,
         "created_at": "2026-03-16T04:35:11.000Z",
         "updated_at": "2026-03-16T04:41:58.000Z",
         "score_state": score_state,
         "sleep_performance_percentage": score,
-        "respiratory_rate": 14.6,
-        "sleep_consistency_percentage": 76,
+        "respiratory_rate": respiratory_rate,
+        "sleep_consistency_percentage": sleep_consistency,
         "sleep_efficiency_percentage": efficiency,
         "total_in_bed_time_milli": in_bed_ms,
         "total_awake_time_milli": awake_ms,
@@ -62,6 +64,9 @@ def make_sleep(score=82, efficiency=91.0, in_bed_ms=28440000,
         "total_rem_sleep_time_milli": rem_ms,
         "sleep_cycle_count": 5,
     }
+    if sleep_needed is not None:
+        data["sleep_needed"] = sleep_needed
+    return data
 
 
 def make_sleep_nested(score=82, duration_start="2026-03-17T00:00:00Z",
@@ -84,18 +89,30 @@ def make_sleep_nested(score=82, duration_start="2026-03-17T00:00:00Z",
 
 
 def make_workout(sport_id=0, strain=12.5, start="2026-03-17T08:00:00Z",
-                 end="2026-03-17T09:00:00Z", avg_hr=145, max_hr=178, kj=2000.0):
+                 end="2026-03-17T09:00:00Z", avg_hr=145, max_hr=178, kj=2000.0,
+                 distance=None, altitude_gain=None, percent_recorded=None,
+                 zone_durations=None):
     """Build a workout record — uses nested score (matches both flat and nested)."""
+    score = {
+        "strain": strain,
+        "average_heart_rate": avg_hr,
+        "max_heart_rate": max_hr,
+        "kilojoule": kj,
+    }
+    if distance is not None:
+        score["distance_meter"] = distance
+    if altitude_gain is not None:
+        score["altitude_gain_meter"] = altitude_gain
+    if percent_recorded is not None:
+        score["percent_recorded"] = percent_recorded
+    if zone_durations is not None:
+        score["zone_duration"] = zone_durations
+
     return {
         "sport_id": sport_id,
         "start": start,
         "end": end,
-        "score": {
-            "strain": strain,
-            "average_heart_rate": avg_hr,
-            "max_heart_rate": max_hr,
-            "kilojoule": kj,
-        },
+        "score": score,
     }
 
 

@@ -15,6 +15,9 @@ class SleepData:
     duration_hours: float | None
     efficiency: float | None       # 0.0-1.0
     stages: dict[str, Any] = field(default_factory=dict)  # source-specific
+    respiratory_rate: float | None = None        # breaths/min
+    sleep_consistency: int | None = None         # 0-100 %
+    sleep_needed: dict[str, Any] | None = None   # baseline/debt/strain/nap millis
 
 
 @dataclass
@@ -35,6 +38,10 @@ class WorkoutData:
     max_hr: int | None
     calories: int | None
     started_at: str | None         # ISO datetime
+    distance_meter: float | None = None       # meters
+    altitude_gain_meter: float | None = None  # meters gained
+    percent_recorded: float | None = None     # 0-100
+    zone_durations: dict[str, int] | None = None  # zone_zero_milli..zone_five_milli
 
 
 @dataclass

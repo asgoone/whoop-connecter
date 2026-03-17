@@ -104,15 +104,33 @@ class WhoopOAuth:
         return self._authorize()
 
     def token_status(self) -> dict:
-        """Return authentication status without exposing internal token store."""
+        """Return authentication status, attempting refresh if token is expired.
+
+        This ensures the status reflects the *actual* usable state — not just
+        the stored expires_at which may be stale after auto-refresh by the
+        API client.
+        """
         tokens = self._store.load()
         if tokens is None:
             return {"authenticated": False, "expires_at": None, "expired": None}
-        now = time.time()
+
+        expired = self._is_expired(tokens.expires_at)
+
+        # If expired but we have a refresh token, try to refresh silently
+        if expired and tokens.refresh_token:
+            try:
+                self._refresh(tokens.refresh_token)
+                # Re-read updated tokens after successful refresh
+                tokens = self._store.load()
+                expired = False
+                logger.info("Token refreshed during status check")
+            except Exception as exc:
+                logger.debug("Silent refresh during status check failed: %s", exc)
+
         return {
             "authenticated": True,
             "expires_at": datetime.fromtimestamp(tokens.expires_at, tz=timezone.utc).isoformat(),
-            "expired": now >= tokens.expires_at,
+            "expired": expired,
         }
 
     def authorize_headless(self) -> str:

@@ -111,7 +111,8 @@ def map_sleep(data: dict) -> SleepData:
     """
     score_state = data.get("score_state")
     if score_state and score_state != "SCORED":
-        return SleepData(score=None, duration_hours=None, efficiency=None, stages={})
+        return SleepData(score=None, duration_hours=None, efficiency=None, stages={},
+                         respiratory_rate=None, sleep_consistency=None, sleep_needed=None)
 
     score_obj = data.get("score") or {}
     stage_summary = score_obj.get("stage_summary") or {}
@@ -139,11 +140,19 @@ def map_sleep(data: dict) -> SleepData:
     # Stage summary — build from flat fields if nested is empty
     stages = _build_stages(data, score_obj, stage_summary)
 
+    # Extra fields from WHOOP API v2
+    resp_rate = _get(data, "respiratory_rate", score_obj)
+    sleep_consistency = _get(data, "sleep_consistency_percentage", score_obj)
+    sleep_needed = _build_sleep_needed(data, score_obj)
+
     return SleepData(
         score=int(perf) if perf is not None else None,
         duration_hours=duration_hours,
         efficiency=round(efficiency, 4) if efficiency is not None else None,
         stages=stages,
+        respiratory_rate=round(float(resp_rate), 1) if resp_rate is not None else None,
+        sleep_consistency=int(sleep_consistency) if sleep_consistency is not None else None,
+        sleep_needed=sleep_needed,
     )
 
 
@@ -170,6 +179,27 @@ def _build_stages(data: dict, score_obj: dict, stage_summary: dict) -> dict:
     return stages
 
 
+def _build_sleep_needed(data: dict, score_obj: dict) -> dict | None:
+    """Build sleep_needed dict from WHOOP sleep_needed fields."""
+    needed_obj = data.get("sleep_needed") or score_obj.get("sleep_needed") or {}
+    if not needed_obj:
+        # Try flat fields
+        keys = [
+            "baseline_milli",
+            "need_from_sleep_debt_milli",
+            "need_from_recent_strain_milli",
+            "need_from_recent_nap_milli",
+        ]
+        result = {}
+        for k in keys:
+            val = _get(data, k, score_obj)
+            if val is not None:
+                result[k] = val
+        return result if result else None
+
+    return needed_obj
+
+
 # ---------------------------------------------------------------------------
 # Workout
 # ---------------------------------------------------------------------------
@@ -190,6 +220,12 @@ def map_workout(data: dict) -> WorkoutData:
     # Use sport_name from API if available, otherwise look up sport_id
     sport = data.get("sport_name") or _sport_name(data.get("sport_id", -1))
 
+    # Extra fields from WHOOP API v2
+    distance = _get(data, "distance_meter", score_obj)
+    altitude_gain = _get(data, "altitude_gain_meter", score_obj)
+    pct_recorded = _get(data, "percent_recorded", score_obj)
+    zone_durations = _build_zone_durations(data, score_obj)
+
     return WorkoutData(
         sport=sport,
         strain=float(strain) if strain is not None else None,
@@ -198,7 +234,30 @@ def map_workout(data: dict) -> WorkoutData:
         max_hr=_safe_int(max_hr),
         calories=_safe_int(_safe_divide(kj, 4.184)) if kj is not None else None,
         started_at=data.get("start"),
+        distance_meter=round(float(distance), 1) if distance is not None else None,
+        altitude_gain_meter=round(float(altitude_gain), 1) if altitude_gain is not None else None,
+        percent_recorded=round(float(pct_recorded), 1) if pct_recorded is not None else None,
+        zone_durations=zone_durations,
     )
+
+
+def _build_zone_durations(data: dict, score_obj: dict) -> dict | None:
+    """Build HR zone durations dict from WHOOP workout fields."""
+    zone_obj = data.get("zone_duration") or score_obj.get("zone_duration") or {}
+    if zone_obj:
+        return zone_obj
+
+    # Try flat zone fields
+    zone_keys = [
+        "zone_zero_milli", "zone_one_milli", "zone_two_milli",
+        "zone_three_milli", "zone_four_milli", "zone_five_milli",
+    ]
+    result = {}
+    for k in zone_keys:
+        val = _get(data, k, score_obj)
+        if val is not None:
+            result[k] = val
+    return result if result else None
 
 
 # ---------------------------------------------------------------------------

@@ -117,13 +117,42 @@ class WhoopService:
     async def get_trends(self, days: int = 7) -> TrendReport:
         if days < 1 or days > 90:
             raise ValueError("days must be between 1 and 90")
+        records = await self._fetch_daily_records_batch(days)
+        return build_trends(records)
 
+    async def get_export(self, days: int = 7) -> dict:
+        """Export body + N days of daily health data.
+
+        Uses batch API requests (4 total) instead of per-day fetching.
+        """
+        if days < 1 or days > 90:
+            raise ValueError("days must be between 1 and 90")
+
+        body_raw, records = await asyncio.gather(
+            self.get_body_measurement(),
+            self._fetch_daily_records_batch(days),
+        )
+
+        body = map_body_measurement(body_raw)
+
+        return {
+            "export_date": datetime.now(tz=timezone.utc).isoformat(),
+            "days": days,
+            "body": body.to_dict(),
+            "daily": [r.to_dict() for r in records],
+        }
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _fetch_daily_records_batch(self, days: int) -> list[DailyHealth]:
+        """Fetch N days of daily health records using 3 batch API calls."""
         end = datetime.now(tz=timezone.utc)
         start = end - timedelta(days=days)
         start_str = start.strftime("%Y-%m-%dT00:00:00.000Z")
         end_str = end.strftime("%Y-%m-%dT23:59:59.000Z")
 
-        # Fetch all data in parallel — 3 requests instead of N*2+1
         cycles, all_recoveries, all_sleeps = await asyncio.gather(
             self.get_cycles(start=start_str, end=end_str),
             self._client.get_paginated(
@@ -139,7 +168,6 @@ class WhoopService:
         # Build lookup tables: date -> first matching record
         recovery_by_date: dict[str, dict] = {}
         for r in all_recoveries:
-            # Recovery records may have created_at or updated_at, not start
             d = (r.get("created_at") or r.get("start") or r.get("updated_at") or "")[:10]
             if d and d not in recovery_by_date:
                 recovery_by_date[d] = r
@@ -148,7 +176,6 @@ class WhoopService:
         for s in all_sleeps:
             if s.get("nap"):
                 continue
-            # Sleep records may have created_at instead of start
             d = (s.get("created_at") or s.get("start") or "")[:10]
             if d and d not in sleep_by_date:
                 sleep_by_date[d] = s
@@ -172,11 +199,7 @@ class WhoopService:
             )
             records.append(health)
 
-        return build_trends(records)
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+        return records
 
     async def _get_daily_health(self, date: str | None) -> DailyHealth:
         if date is None:

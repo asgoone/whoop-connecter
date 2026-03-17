@@ -5,7 +5,6 @@ All async calls are wrapped with asyncio.run().
 
 import asyncio
 import json
-import sys
 from typing import Optional
 
 import typer
@@ -95,9 +94,9 @@ def recovery(
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="bold")
     table.add_row("Recovery Score", f"{mapped.score}%" if mapped.score is not None else "N/A")
-    table.add_row("HRV (RMSSD)", f"{mapped.hrv_rmssd:.1f} ms" if mapped.hrv_rmssd else "N/A")
-    table.add_row("Resting HR", f"{mapped.resting_hr} bpm" if mapped.resting_hr else "N/A")
-    table.add_row("SpO2", f"{mapped.spo2:.1f}%" if mapped.spo2 else "N/A")
+    table.add_row("HRV (RMSSD)", f"{mapped.hrv_rmssd:.1f} ms" if mapped.hrv_rmssd is not None else "N/A")
+    table.add_row("Resting HR", f"{mapped.resting_hr} bpm" if mapped.resting_hr is not None else "N/A")
+    table.add_row("SpO2", f"{mapped.spo2:.1f}%" if mapped.spo2 is not None else "N/A")
     console.print(table)
 
 
@@ -124,6 +123,9 @@ def sleep(
             "score": mapped.score,
             "duration_hours": mapped.duration_hours,
             "efficiency": mapped.efficiency,
+            "respiratory_rate": mapped.respiratory_rate,
+            "sleep_consistency": mapped.sleep_consistency,
+            "sleep_needed": mapped.sleep_needed,
         }))
         return
 
@@ -133,12 +135,20 @@ def sleep(
     table.add_row("Sleep Score", f"{mapped.score}" if mapped.score is not None else "N/A")
     table.add_row(
         "Duration",
-        f"{mapped.duration_hours:.1f} hrs" if mapped.duration_hours else "N/A",
+        f"{mapped.duration_hours:.1f} hrs" if mapped.duration_hours is not None else "N/A",
     )
     table.add_row(
         "Efficiency",
-        f"{mapped.efficiency * 100:.0f}%" if mapped.efficiency else "N/A",
+        f"{mapped.efficiency * 100:.0f}%" if mapped.efficiency is not None else "N/A",
     )
+    if mapped.respiratory_rate is not None:
+        table.add_row("Respiratory Rate", f"{mapped.respiratory_rate:.1f} breaths/min")
+    if mapped.sleep_consistency is not None:
+        table.add_row("Consistency", f"{mapped.sleep_consistency}%")
+    if mapped.sleep_needed:
+        baseline_hrs = mapped.sleep_needed.get("baseline_milli")
+        if baseline_hrs is not None:
+            table.add_row("Sleep Needed (baseline)", f"{baseline_hrs / 3_600_000:.1f} hrs")
     console.print(table)
 
 
@@ -259,6 +269,28 @@ def auth(
     else:
         console.print(f"[red]Unknown action:[/red] {action}. Use: status, login, login-headless, logout")
         raise typer.Exit(1)
+
+
+@app.command()
+def export(
+    days: int = typer.Option(7, "--days", "-n", help="Number of days to export (1-90)"),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path (default: stdout)"),
+):
+    """Export all health data for N days as JSON."""
+    service = _get_service()
+
+    try:
+        export_data = _run(_run_with_cleanup(service, service.get_export(days=days)))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    if output:
+        import pathlib
+        pathlib.Path(output).write_text(json.dumps(export_data, indent=2, default=str))
+        console.print(f"[green]Exported {days} days to {output}[/green]")
+    else:
+        console.print_json(json.dumps(export_data, indent=2, default=str))
 
 
 @app.command()

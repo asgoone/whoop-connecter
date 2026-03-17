@@ -120,6 +120,48 @@ class TestMapSleepFlat:
         s = map_sleep(make_sleep(efficiency=0.0))
         assert s.efficiency == 0.0
 
+    def test_respiratory_rate_extracted(self):
+        s = map_sleep(make_sleep(respiratory_rate=14.6))
+        assert s.respiratory_rate == 14.6
+
+    def test_sleep_consistency_extracted(self):
+        s = map_sleep(make_sleep(sleep_consistency=76))
+        assert s.sleep_consistency == 76
+
+    def test_sleep_needed_extracted(self):
+        needed = {
+            "baseline_milli": 27360000,
+            "need_from_sleep_debt_milli": 1800000,
+            "need_from_recent_strain_milli": 900000,
+            "need_from_recent_nap_milli": -600000,
+        }
+        s = map_sleep(make_sleep(sleep_needed=needed))
+        assert s.sleep_needed == needed
+
+    def test_sleep_needed_none_when_absent(self):
+        s = map_sleep(make_sleep())
+        # No sleep_needed key in fixture → should be None
+        assert s.sleep_needed is None
+
+    def test_respiratory_rate_none_when_not_scored(self):
+        s = map_sleep(make_sleep(score_state="PENDING_SCORE"))
+        assert s.respiratory_rate is None
+        assert s.sleep_consistency is None
+        assert s.sleep_needed is None
+
+    def test_respiratory_rate_none_when_absent(self):
+        """Flat data without respiratory_rate should return None."""
+        data = make_sleep()
+        del data["respiratory_rate"]
+        s = map_sleep(data)
+        assert s.respiratory_rate is None
+
+    def test_sleep_consistency_none_when_absent(self):
+        data = make_sleep()
+        del data["sleep_consistency_percentage"]
+        s = map_sleep(data)
+        assert s.sleep_consistency is None
+
 
 # ===========================================================================
 # map_sleep — nested format (docs/legacy)
@@ -219,6 +261,37 @@ class TestMapWorkout:
         assert w.sport == "Weightlifting"
         assert w.strain is None
         assert w.calories is None
+
+    def test_distance_extracted(self):
+        w = map_workout(make_workout(distance=5000.5))
+        assert w.distance_meter == 5000.5
+
+    def test_altitude_gain_extracted(self):
+        w = map_workout(make_workout(altitude_gain=150.3))
+        assert w.altitude_gain_meter == 150.3
+
+    def test_percent_recorded_extracted(self):
+        w = map_workout(make_workout(percent_recorded=98.5))
+        assert w.percent_recorded == 98.5
+
+    def test_zone_durations_extracted(self):
+        zones = {
+            "zone_zero_milli": 60000,
+            "zone_one_milli": 300000,
+            "zone_two_milli": 600000,
+            "zone_three_milli": 1200000,
+            "zone_four_milli": 900000,
+            "zone_five_milli": 120000,
+        }
+        w = map_workout(make_workout(zone_durations=zones))
+        assert w.zone_durations == zones
+
+    def test_enriched_fields_none_by_default(self):
+        w = map_workout(make_workout())
+        assert w.distance_meter is None
+        assert w.altitude_gain_meter is None
+        assert w.percent_recorded is None
+        assert w.zone_durations is None
 
 
 # ===========================================================================
