@@ -243,7 +243,11 @@ def map_workout(data: dict) -> WorkoutData:
 
 def _build_zone_durations(data: dict, score_obj: dict) -> dict | None:
     """Build HR zone durations dict from WHOOP workout fields."""
-    zone_obj = data.get("zone_duration") or score_obj.get("zone_duration") or {}
+    zone_obj = (
+        data.get("zone_durations") or score_obj.get("zone_durations")
+        or data.get("zone_duration") or score_obj.get("zone_duration")
+        or {}
+    )
     if zone_obj:
         return zone_obj
 

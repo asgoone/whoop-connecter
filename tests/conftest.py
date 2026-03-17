@@ -106,7 +106,7 @@ def make_workout(sport_id=0, strain=12.5, start="2026-03-17T08:00:00Z",
     if percent_recorded is not None:
         score["percent_recorded"] = percent_recorded
     if zone_durations is not None:
-        score["zone_duration"] = zone_durations
+        score["zone_durations"] = zone_durations
 
     return {
         "sport_id": sport_id,

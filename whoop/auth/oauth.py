@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
-SCOPES = "read:profile read:workout read:recovery read:sleep read:cycles offline"
+SCOPES = "read:profile read:body_measurement read:workout read:recovery read:sleep read:cycles offline"
 
 
 @dataclass
