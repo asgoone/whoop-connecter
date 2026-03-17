@@ -74,9 +74,25 @@ OpenClaw Gateway → Coach → Telegram
 
 Для VPS без браузера доступен **headless-режим** — см. [Развёртывание на VPS](#развёртывание-на-vps).
 
+#### OAuth scopes
+
+Сервер запрашивает следующие разрешения при авторизации:
+
+| Scope | Доступ |
+|---|---|
+| `read:profile` | Имя, email, user_id |
+| `read:body_measurement` | Рост, вес, макс. ЧСС |
+| `read:recovery` | Recovery score, HRV, resting HR, SpO2 |
+| `read:sleep` | Данные сна: стадии, эффективность, дыхание |
+| `read:workout` | Тренировки: strain, HR, калории, дистанция |
+| `read:cycles` | Физиологические циклы: дневная нагрузка |
+| `offline` | Refresh token для автоматического обновления |
+
+> Все scopes необходимо включить в WHOOP Developer Dashboard при создании приложения.
+
 ### Кэширование
 
-Все GET-запросы к WHOOP API кэшируются в памяти с TTL 5 минут. Устаревшие записи вычищаются лениво при следующем обращении, плюс полная зачистка раз в 60 секунд.
+Все GET-запросы к WHOOP API кэшируются в памяти с TTL 5 минут (настраивается через `WHOOP_CACHE_TTL`). Устаревшие записи вычищаются лениво при следующем обращении, плюс полная зачистка раз в 60 секунд.
 
 ---
 
@@ -120,7 +136,10 @@ whoop_connecter/
 │   ├── openclaw_mcp_config.json  # Шаблон MCP-конфига для OpenClaw
 │   └── setup_vps.sh              # Скрипт развёртывания на VPS
 │
-├── tests/                    # 188 тестов (unit + integration)
+├── damp/
+│   └── openapi.json          # OpenAPI-спецификация WHOOP API v2
+│
+├── tests/                    # 199 тестов (unit + integration + acceptance)
 ├── .env.example
 ├── pyproject.toml
 └── README.md
@@ -165,6 +184,7 @@ pip install -e .
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 ```
 
 ### 2. Заполнить параметры
@@ -201,6 +221,14 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 | `WHOOP_TOKEN_PATH` | Нет | `~/.whoop/tokens.enc` | Путь к файлу токенов |
 | `WHOOP_CACHE_TTL` | Нет | `300` | TTL кэша API-ответов, секунды |
 | `LOG_LEVEL` | Нет | `WARNING` | Уровень логов (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+
+### Настройка WHOOP Developer App
+
+В [developer.whoop.com](https://developer.whoop.com) при создании приложения:
+
+1. **Redirect URI** — укажите `http://localhost:8080/callback`.
+2. **Scopes** — включите все: `read:profile`, `read:body_measurement`, `read:recovery`, `read:sleep`, `read:workout`, `read:cycles`.
+3. Скопируйте `Client ID` и `Client Secret` в `.env`.
 
 ---
 
@@ -264,7 +292,7 @@ whoop sleep
 whoop sleep --raw
 ```
 
-Показывает: sleep score, duration, efficiency, respiratory rate, sleep consistency, sleep needed (baseline).
+Показывает: sleep score, duration, efficiency, стадии сна, respiratory rate, sleep consistency, sleep needed (baseline/debt/strain/nap).
 
 #### `whoop body` — измерения тела
 
@@ -293,7 +321,7 @@ whoop export --days 30                 # 30 дней
 whoop export --days 14 --output data.json  # в файл
 ```
 
-Экспортирует body + N дней daily health (sleep, recovery, activity) в JSON. Использует batch-запросы (4 HTTP-вызова независимо от количества дней).
+Экспортирует body + N дней daily health (sleep, recovery, activity) в JSON. Использует batch-запросы: **4 HTTP-вызова** независимо от количества дней (1 body + 3 paginated: cycles, recovery, sleep).
 
 #### `whoop auth` — управление авторизацией
 
@@ -304,7 +332,7 @@ whoop auth login-headless  # авторизация без браузера (VPS
 whoop auth logout          # удалить токен
 ```
 
-`auth status` автоматически пробует обновить токен, если он истёк, и показывает актуальный статус.
+`auth status` автоматически пробует обновить токен через refresh, если он истёк, и показывает актуальный статус.
 
 #### `whoop raw` — сырые данные API (отладка)
 
@@ -326,6 +354,7 @@ whoop raw cycles
 ```bash
 whoop summary --raw | jq '.recovery_score'
 whoop sleep --raw | jq '.sleep_needed'
+whoop export --days 7 | jq '.daily[0].recovery'
 ```
 
 ---
@@ -399,11 +428,21 @@ MCP-сервер предоставляет **9 инструментов**. Coac
 
 ### `get_sleep`
 
-Данные сна. Автоматически возвращает основной сон (не дрёму).
+Данные сна. Автоматически выбирает основной сон (не дрёму), предпочитает `SCORED` записи.
 
 **Параметры:** `start`, `end`.
 
-**Возвращает:** `score`, `duration_hours`, `efficiency`, `stages`, `respiratory_rate`, `sleep_consistency`, `sleep_needed` (baseline/debt/strain/nap millis).
+**Возвращает:**
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `score` | int | Sleep performance percentage (0-100) |
+| `duration_hours` | float | Время в кровати |
+| `efficiency` | float | Доля сна от времени в кровати (0.0-1.0) |
+| `stages` | dict | Стадии сна в миллисекундах (light, SWS, REM, awake) |
+| `respiratory_rate` | float | Частота дыхания (вдохов/мин) |
+| `sleep_consistency` | int | Консистентность сна (0-100%) |
+| `sleep_needed` | dict | Потребность во сне: baseline, debt, strain, nap (мс) |
 
 ---
 
@@ -413,7 +452,20 @@ MCP-сервер предоставляет **9 инструментов**. Coac
 
 **Параметры:** `start`, `end`.
 
-**Возвращает:** массив объектов с полями `sport`, `strain`, `duration_minutes`, `avg_hr`, `max_hr`, `calories`, `started_at`, `distance_meter`, `altitude_gain_meter`, `percent_recorded`, `zone_durations`.
+**Возвращает:** массив объектов:
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `sport` | string | Название вида спорта |
+| `strain` | float | Нагрузка (0-21) |
+| `duration_minutes` | float | Длительность |
+| `avg_hr` | int | Средний пульс |
+| `max_hr` | int | Макс. пульс |
+| `calories` | int | Калории |
+| `distance_meter` | float | Дистанция в метрах (если есть GPS) |
+| `altitude_gain_meter` | float | Набор высоты в метрах (если есть) |
+| `percent_recorded` | float | % записанных HR-данных |
+| `zone_durations` | dict | Время в пульсовых зонах (zone_zero..zone_five, мс) |
 
 ---
 
@@ -423,11 +475,13 @@ MCP-сервер предоставляет **9 инструментов**. Coac
 
 **Параметры:** `start`, `end`.
 
+**Возвращает:** `strain`, `calories`.
+
 ---
 
 ### `get_body_measurement`
 
-Измерения тела пользователя.
+Измерения тела пользователя. Требует scope `read:body_measurement`.
 
 **Параметры:** нет.
 
@@ -451,7 +505,7 @@ MCP-сервер предоставляет **9 инструментов**. Coac
 
 ### `get_auth_status`
 
-Статус OAuth-токена. Автоматически пытается обновить токен, если он истёк.
+Статус OAuth-токена. Автоматически пытается обновить токен через refresh, если он истёк.
 
 **Возвращает:**
 
@@ -512,7 +566,7 @@ MCP-сервер предоставляет **9 инструментов**. Coac
     -d @-
 ```
 
-> **Примечание:** Конкретный способ доставки summary в Telegram зависит от архитектуры вашего Coach. Это может быть webhook, cron → OpenClaw API, или scheduled task внутри Coach.
+> Конкретный способ доставки summary в Telegram зависит от архитектуры вашего Coach. Это может быть webhook, cron → OpenClaw API, или scheduled task внутри Coach.
 
 ---
 
@@ -528,20 +582,15 @@ bash deploy/setup_vps.sh
 
 # 2. Сохранить ключ шифрования, который вывел скрипт!
 
-# 3. Создать .env
-cp .env.example .env
-nano .env   # заполнить CLIENT_ID, CLIENT_SECRET, ENCRYPTION_KEY
+# 3. Заполнить .env
+nano .env   # CLIENT_ID, CLIENT_SECRET, ENCRYPTION_KEY
 
-# 4. Создать директорию для токенов
-mkdir -p ~/.whoop
-chmod 700 ~/.whoop
-
-# 5. Авторизация (headless — без браузера)
+# 4. Авторизация (headless — без браузера)
 .venv/bin/whoop auth login-headless
 # → Скрипт покажет URL. Откройте его в браузере на другом устройстве,
 #   авторизуйтесь, скопируйте URL редиректа и вставьте в терминал.
 
-# 6. Проверить
+# 5. Проверить
 .venv/bin/whoop auth status
 .venv/bin/whoop summary
 ```
@@ -556,7 +605,7 @@ chmod 700 ~/.whoop
 4. Авторизуйтесь в WHOOP.
 5. Браузер перенаправит на `localhost:8080/callback?code=...&state=...` — скопируйте **полный URL** из адресной строки.
 6. Вставьте URL в терминал VPS.
-7. Токены сохраняются, далее обновление происходит автоматически.
+7. Токены сохраняются, далее обновление происходит автоматически через refresh token.
 
 > **Важно:** Redirect на `localhost:8080` не сработает в браузере на другом устройстве — это нормально. Просто скопируйте URL из адресной строки, даже если страница не загрузилась.
 
@@ -609,6 +658,10 @@ chmod 700 ~/.whoop
 - **Python 3.10+** — обязательно (используется синтаксис `X | Y` для типов).
 - **Один MCP-сервер на процесс** — при нескольких одновременных запросах от Coach они обрабатываются последовательно (MCP stdio однопоточный).
 - **`get_trends` / `export` с `days > 30`** — медленнее из-за большого объёма данных, но используют batch-запросы (3-4 HTTP-вызова независимо от N).
+
+### WHOOP API v2
+
+Формат ответов — вложенный (метрики внутри объекта `score`). Маперы проекта обрабатывают как вложенный, так и плоский формат для совместимости. Полная спецификация API хранится в `damp/openapi.json`.
 
 ---
 
@@ -666,12 +719,19 @@ whoop raw sleep --start 2026-03-10T00:00:00Z
 ### Тесты
 
 ```bash
-# Запустить все тесты (188 штук)
+# Запустить все тесты (199)
 .venv/bin/python -m pytest tests/ -v
 
 # Только unit-тесты
 .venv/bin/python -m pytest tests/unit/ -v
 
-# Только интеграционные
+# Только интеграционные + приёмочные
 .venv/bin/python -m pytest tests/integration/ -v
 ```
+
+Структура тестов:
+
+| Директория | Что тестирует | Количество |
+|---|---|---|
+| `tests/unit/` | Маперы, аналитика, кэш, токен-стор | ~130 |
+| `tests/integration/` | Сервисный слой, MCP-инструменты, приёмочные сценарии | ~70 |
