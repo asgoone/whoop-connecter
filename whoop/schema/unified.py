@@ -45,6 +45,20 @@ class ActivityData:
 
 
 @dataclass
+class BodyMeasurement:
+    height_meter: float | None      # meters
+    weight_kilogram: float | None   # kg
+    max_heart_rate: int | None      # bpm
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "height_meter": self.height_meter,
+            "weight_kilogram": self.weight_kilogram,
+            "max_heart_rate": self.max_heart_rate,
+        }
+
+
+@dataclass
 class DailyHealth:
     source: str                    # "whoop" | "oura" | "apple_health"
     date: str                      # ISO date "YYYY-MM-DD"

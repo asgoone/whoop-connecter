@@ -16,12 +16,13 @@ from mcp.types import TextContent, Tool
 from whoop.api.client import WhoopAPIError
 from whoop.services import WhoopService, _build_service_from_env
 
-from .tools import auth_status, profile, recovery, sleep, workouts, cycles, summary, trends
+from .tools import auth_status, body, profile, recovery, sleep, workouts, cycles, summary, trends
 
 logger = logging.getLogger(__name__)
 
 _TOOL_MODULES = [
     auth_status,
+    body,
     profile,
     recovery,
     sleep,

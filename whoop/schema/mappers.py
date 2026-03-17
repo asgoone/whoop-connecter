@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from .unified import ActivityData, RecoveryData, SleepData, WorkoutData
+from .unified import ActivityData, BodyMeasurement, RecoveryData, SleepData, WorkoutData
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,26 @@ def _safe_int(value):
     if value is None:
         return None
     return int(value)
+
+
+# ---------------------------------------------------------------------------
+# Body Measurement
+# ---------------------------------------------------------------------------
+
+def map_body_measurement(data: dict) -> BodyMeasurement:
+    """Map WHOOP body measurement response to BodyMeasurement.
+
+    API returns flat object: {height_meter, weight_kilogram, max_heart_rate}.
+    """
+    height = data.get("height_meter")
+    weight = data.get("weight_kilogram")
+    max_hr = data.get("max_heart_rate")
+
+    return BodyMeasurement(
+        height_meter=round(float(height), 2) if height is not None else None,
+        weight_kilogram=round(float(weight), 1) if weight is not None else None,
+        max_heart_rate=int(max_hr) if max_hr is not None else None,
+    )
 
 
 # ---------------------------------------------------------------------------

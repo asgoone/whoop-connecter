@@ -118,6 +118,15 @@ def make_cycle_nested(strain=10.5, kj=8000.0):
     return {"start": "2026-03-17T06:00:00Z", "score": {"strain": strain, "kilojoule": kj}}
 
 
+def make_body_measurement(height=1.803, weight=82.5, max_hr=195):
+    """Build a body measurement record matching the WHOOP API format."""
+    return {
+        "height_meter": height,
+        "weight_kilogram": weight,
+        "max_heart_rate": max_hr,
+    }
+
+
 def make_daily_health(date="2026-03-17", recovery_score=70, sleep_score=82,
                       hrv=55.0, rhr=58, strain=10.5):
     return DailyHealth(

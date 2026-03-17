@@ -143,6 +143,48 @@ def sleep(
 
 
 @app.command()
+def body(
+    raw: bool = typer.Option(False, "--raw", help="Output raw JSON"),
+):
+    """Show body measurements (height, weight, max HR)."""
+    from whoop.schema.mappers import map_body_measurement
+
+    service = _get_service()
+    result = _run(_run_with_cleanup(service, service.get_body_measurement()))
+
+    mapped = map_body_measurement(result)
+
+    if raw:
+        console.print_json(json.dumps(mapped.to_dict()))
+        return
+
+    table = Table(title="Body Measurements", show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="bold")
+    table.add_row(
+        "Height",
+        f"{mapped.height_meter:.2f} m ({mapped.height_meter * 100:.0f} cm)"
+        if mapped.height_meter else "N/A",
+    )
+    table.add_row(
+        "Weight",
+        f"{mapped.weight_kilogram:.1f} kg"
+        if mapped.weight_kilogram else "N/A",
+    )
+    table.add_row(
+        "Max Heart Rate",
+        f"{mapped.max_heart_rate} bpm"
+        if mapped.max_heart_rate else "N/A",
+    )
+    # BMI — computed if both height and weight are available
+    if mapped.height_meter and mapped.weight_kilogram:
+        bmi = mapped.weight_kilogram / (mapped.height_meter ** 2)
+        table.add_row("BMI", f"{bmi:.1f}")
+
+    console.print(table)
+
+
+@app.command()
 def trends(
     days: int = typer.Option(7, "--days", "-n", help="Number of days (1-90)"),
     raw: bool = typer.Option(False, "--raw"),
@@ -221,7 +263,7 @@ def auth(
 
 @app.command()
 def raw(
-    endpoint: str = typer.Argument(..., help="profile | recovery | sleep | workouts | cycles"),
+    endpoint: str = typer.Argument(..., help="profile | body | recovery | sleep | workouts | cycles"),
     start: Optional[str] = typer.Option(None, "--start"),
     end: Optional[str] = typer.Option(None, "--end"),
 ):
@@ -232,6 +274,8 @@ def raw(
         try:
             if endpoint == "profile":
                 return await service.get_profile()
+            elif endpoint == "body":
+                return await service.get_body_measurement()
             elif endpoint == "recovery":
                 return await service.get_recovery(start=start, end=end)
             elif endpoint == "sleep":
@@ -242,7 +286,7 @@ def raw(
                 return await service.get_cycles(start=start, end=end)
             else:
                 console.print(f"[red]Unknown endpoint:[/red] {endpoint}")
-                console.print("Available: profile, recovery, sleep, workouts, cycles")
+                console.print("Available: profile, body, recovery, sleep, workouts, cycles")
                 raise typer.Exit(1)
         finally:
             await service.aclose()

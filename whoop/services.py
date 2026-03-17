@@ -16,7 +16,7 @@ from .auth.oauth import OAuthConfig, WhoopOAuth
 from .auth.token_store import TokenStore
 from .analytics.daily_summary import DailySummary, build_daily_summary
 from .analytics.trends import TrendReport, build_trends
-from .schema.mappers import map_cycle, map_recovery, map_sleep, map_workout
+from .schema.mappers import map_body_measurement, map_cycle, map_recovery, map_sleep, map_workout
 from .schema.unified import DailyHealth
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,9 @@ class WhoopService:
 
     async def get_profile(self) -> dict:
         return await self._client.get(endpoints.PROFILE)
+
+    async def get_body_measurement(self) -> dict:
+        return await self._client.get(endpoints.BODY_MEASUREMENT)
 
     async def get_recovery(self, start: str | None = None, end: str | None = None) -> dict | None:
         params = self._date_params(start, end)

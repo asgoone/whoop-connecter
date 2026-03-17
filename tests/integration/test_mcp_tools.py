@@ -17,6 +17,7 @@ pytestmark = pytest.mark.asyncio
 
 EXPECTED_TOOLS = {
     "get_auth_status",
+    "get_body_measurement",
     "get_profile",
     "get_recovery",
     "get_sleep",
@@ -36,6 +37,9 @@ def mock_service():
         "expired": False,
     }
     svc.get_profile = AsyncMock(return_value={"user_id": 1, "email": "test@example.com"})
+    svc.get_body_measurement = AsyncMock(return_value={
+        "height_meter": 1.80, "weight_kilogram": 82.5, "max_heart_rate": 195,
+    })
     svc.get_recovery = AsyncMock(return_value=None)
     svc.get_sleep = AsyncMock(return_value=None)
     svc.get_workouts = AsyncMock(return_value=[])
@@ -92,10 +96,10 @@ class TestToolRegistration:
         text = await _call(server, "nonexistent_tool")
         assert "Unknown tool" in text
 
-    async def test_tool_count_is_eight(self, server):
+    async def test_tool_count_is_nine(self, server):
         handler = server.request_handlers[ListToolsRequest]
         result = await handler(ListToolsRequest(method="tools/list"))
-        assert len(result.root.tools) == 8
+        assert len(result.root.tools) == 9
 
 
 class TestAuthStatusTool:
@@ -117,6 +121,23 @@ class TestProfileTool:
         text = await _call(server, "get_profile")
         data = json.loads(text)
         assert data["email"] == "test@example.com"
+
+
+class TestBodyMeasurementTool:
+    async def test_returns_body_data(self, server):
+        text = await _call(server, "get_body_measurement")
+        data = json.loads(text)
+        assert data["height_meter"] == 1.80
+        assert data["weight_kilogram"] == 82.5
+        assert data["max_heart_rate"] == 195
+
+    async def test_empty_response_returns_all_none(self, server, mock_service):
+        mock_service.get_body_measurement = AsyncMock(return_value={})
+        text = await _call(server, "get_body_measurement")
+        data = json.loads(text)
+        assert data["height_meter"] is None
+        assert data["weight_kilogram"] is None
+        assert data["max_heart_rate"] is None
 
 
 class TestRecoveryTool:

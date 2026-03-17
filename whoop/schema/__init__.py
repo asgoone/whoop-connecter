@@ -1,6 +1,7 @@
-from .unified import ActivityData, DailyHealth, RecoveryData, SleepData, WorkoutData
+from .unified import ActivityData, BodyMeasurement, DailyHealth, RecoveryData, SleepData, WorkoutData
 
 __all__ = [
+    "BodyMeasurement",
     "DailyHealth",
     "SleepData",
     "RecoveryData",

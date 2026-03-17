@@ -5,11 +5,13 @@ Tests both flat (real API) and nested (docs-style) response formats.
 
 import pytest
 from tests.conftest import (
+    make_body_measurement,
     make_recovery, make_recovery_nested,
     make_sleep, make_sleep_nested,
     make_workout, make_cycle, make_cycle_nested,
 )
 from whoop.schema.mappers import (
+    map_body_measurement,
     map_recovery,
     map_sleep,
     map_workout,
@@ -299,3 +301,53 @@ class TestSportName:
     def test_boundary_sport_ids(self):
         assert _sport_name(101) == "Volleyball (Beach)"
         assert _sport_name(102) == "Sport 102"
+
+
+# ===========================================================================
+# map_body_measurement
+# ===========================================================================
+
+class TestMapBodyMeasurement:
+    def test_typical_measurement(self):
+        b = map_body_measurement(make_body_measurement())
+        assert b.height_meter == 1.8
+        assert b.weight_kilogram == 82.5
+        assert b.max_heart_rate == 195
+
+    def test_height_rounded_to_two_decimals(self):
+        b = map_body_measurement(make_body_measurement(height=1.8567))
+        assert b.height_meter == 1.86
+
+    def test_weight_rounded_to_one_decimal(self):
+        b = map_body_measurement(make_body_measurement(weight=82.456))
+        assert b.weight_kilogram == 82.5
+
+    def test_max_hr_is_int(self):
+        b = map_body_measurement(make_body_measurement(max_hr=195.6))
+        assert b.max_heart_rate == 195
+        assert isinstance(b.max_heart_rate, int)
+
+    def test_empty_dict_returns_all_none(self):
+        b = map_body_measurement({})
+        assert b.height_meter is None
+        assert b.weight_kilogram is None
+        assert b.max_heart_rate is None
+
+    def test_partial_data(self):
+        b = map_body_measurement({"weight_kilogram": 75.0})
+        assert b.weight_kilogram == 75.0
+        assert b.height_meter is None
+        assert b.max_heart_rate is None
+
+    def test_zero_values_not_treated_as_none(self):
+        b = map_body_measurement({"height_meter": 0.0, "weight_kilogram": 0.0, "max_heart_rate": 0})
+        assert b.height_meter == 0.0
+        assert b.weight_kilogram == 0.0
+        assert b.max_heart_rate == 0
+
+    def test_to_dict(self):
+        b = map_body_measurement(make_body_measurement())
+        d = b.to_dict()
+        assert "height_meter" in d
+        assert "weight_kilogram" in d
+        assert "max_heart_rate" in d

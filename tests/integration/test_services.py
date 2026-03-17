@@ -224,6 +224,20 @@ class TestGetTrends:
         assert rec_trend.direction == "N/A"
 
 
+class TestGetBodyMeasurement:
+    async def test_returns_raw_dict(self, service, mock_client):
+        body_data = {"height_meter": 1.80, "weight_kilogram": 82.5, "max_heart_rate": 195}
+        mock_client.get = AsyncMock(return_value=body_data)
+        result = await service.get_body_measurement()
+        assert result == body_data
+
+    async def test_calls_correct_endpoint(self, service, mock_client):
+        mock_client.get = AsyncMock(return_value={})
+        await service.get_body_measurement()
+        from whoop.api import endpoints
+        mock_client.get.assert_called_once_with(endpoints.BODY_MEASUREMENT)
+
+
 class TestAuthStatus:
     def test_delegates_to_oauth(self, service, mock_oauth):
         result = service.auth_status()
