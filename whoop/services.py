@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date as date_cls, datetime, timedelta, timezone
 
 from .api.client import WhoopClient
 from .api import endpoints
@@ -21,6 +21,85 @@ from .schema.mappers import map_body_measurement, map_cycle, map_recovery, map_s
 from .schema.unified import DailyHealth
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _parse_offset(value: str | None) -> timezone:
+    """WHOOP TZD offset ('+03:00', '-05:00', 'Z') -> tzinfo; UTC if absent or invalid."""
+    if not value or value == "Z":
+        return timezone.utc
+    try:
+        sign = -1 if value[0] == "-" else 1
+        hours, minutes = value.lstrip("+-").split(":")
+        return timezone(sign * timedelta(hours=int(hours), minutes=int(minutes)))
+    except ValueError:
+        return timezone.utc
+
+
+def _local_date(value: str | None, tz: timezone) -> str | None:
+    ts = _parse_ts(value)
+    return ts.astimezone(tz).date().isoformat() if ts else None
+
+
+def _cycle_day(cycle: dict) -> str | None:
+    """Local calendar day a cycle belongs to.
+
+    A cycle starts at sleep onset. Onset before local noon belongs to that
+    day; onset after local noon (going to bed in the evening) belongs to the
+    next day, i.e. the day the user wakes up.
+    """
+    start = _parse_ts(cycle.get("start"))
+    if start is None:
+        return None
+    local = start.astimezone(_parse_offset(cycle.get("timezone_offset")))
+    if local.hour >= 12:
+        local += timedelta(days=1)
+    return local.date().isoformat()
+
+
+def _record_for_cycle(records: list[dict], cycle: dict, day: str, ts_key: str) -> dict | None:
+    """First record linked to the cycle by cycle_id.
+
+    Records without cycle_id fall back to the local date of `ts_key`
+    (or created_at) in the cycle's timezone.
+    """
+    tz = _parse_offset(cycle.get("timezone_offset"))
+    for r in records:
+        if r.get("cycle_id") is not None:
+            if r["cycle_id"] == cycle.get("id"):
+                return r
+        elif _local_date(r.get(ts_key) or r.get("created_at"), tz) == day:
+            return r
+    return None
+
+
+def _build_daily_health(
+    cycle: dict, day: str, recoveries: list[dict], sleeps: list[dict]
+) -> DailyHealth:
+    main_sleeps = [s for s in sleeps if not s.get("nap")]
+    recovery_raw = _record_for_cycle(recoveries, cycle, day, "created_at")
+    sleep_raw = _record_for_cycle(main_sleeps, cycle, day, "end")
+    return DailyHealth(
+        source="whoop",
+        date=day,
+        fetched_at=_utcnow().isoformat(),
+        sleep=map_sleep(sleep_raw) if sleep_raw else None,
+        recovery=map_recovery(recovery_raw) if recovery_raw else None,
+        activity=map_cycle(cycle),
+    )
 
 
 def _build_service_from_env() -> "WhoopService":
@@ -153,7 +232,7 @@ class WhoopService:
         body = map_body_measurement(body_raw)
 
         return {
-            "export_date": datetime.now(tz=timezone.utc).isoformat(),
+            "export_date": _utcnow().isoformat(),
             "days": days,
             "body": body.to_dict(),
             "daily": [r.to_dict() for r in records],
@@ -165,7 +244,7 @@ class WhoopService:
 
     async def _fetch_daily_records_batch(self, days: int) -> list[DailyHealth]:
         """Fetch N days of daily health records using 3 batch API calls."""
-        end = datetime.now(tz=timezone.utc)
+        end = _utcnow()
         start = end - timedelta(days=days)
         start_str = start.strftime("%Y-%m-%dT00:00:00.000Z")
         end_str = end.strftime("%Y-%m-%dT23:59:59.000Z")
@@ -182,70 +261,68 @@ class WhoopService:
             ),
         )
 
-        # Build lookup tables: date -> first matching record
-        recovery_by_date: dict[str, dict] = {}
-        for r in all_recoveries:
-            d = (r.get("created_at") or r.get("start") or r.get("updated_at") or "")[:10]
-            if d and d not in recovery_by_date:
-                recovery_by_date[d] = r
-
-        sleep_by_date: dict[str, dict] = {}
-        for s in all_sleeps:
-            if s.get("nap"):
-                continue
-            d = (s.get("created_at") or s.get("start") or "")[:10]
-            if d and d not in sleep_by_date:
-                sleep_by_date[d] = s
-
         records: list[DailyHealth] = []
         for cycle in cycles:
-            cycle_date = (cycle.get("start") or "")[:10]
-            if not cycle_date:
-                continue
-
-            recovery_raw = recovery_by_date.get(cycle_date)
-            sleep_raw = sleep_by_date.get(cycle_date)
-
-            health = DailyHealth(
-                source="whoop",
-                date=cycle_date,
-                fetched_at=datetime.now(tz=timezone.utc).isoformat(),
-                sleep=map_sleep(sleep_raw) if sleep_raw else None,
-                recovery=map_recovery(recovery_raw) if recovery_raw else None,
-                activity=map_cycle(cycle),
-            )
-            records.append(health)
-
+            day = _cycle_day(cycle)
+            if day:
+                records.append(_build_daily_health(cycle, day, all_recoveries, all_sleeps))
         return records
 
     async def _get_daily_health(self, date: str | None) -> DailyHealth:
+        """Health for one local calendar day.
+
+        WHOOP filters by UTC record start, while days are local to the user
+        (each record carries timezone_offset). Query a window wide enough for
+        any offset, then pick the cycle whose local day matches and link its
+        sleep/recovery by cycle_id.
+        """
         if date is None:
-            date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            anchor = _utcnow().date()
+        else:
+            try:
+                anchor = date_cls.fromisoformat(date)
+            except ValueError:
+                raise ValueError("date must be in YYYY-MM-DD format") from None
 
-        start = f"{date}T00:00:00.000Z"
-        end = f"{date}T23:59:59.000Z"
+        start = (anchor - timedelta(days=3)).strftime("%Y-%m-%dT00:00:00.000Z")
+        end = (anchor + timedelta(days=2)).strftime("%Y-%m-%dT00:00:00.000Z")
+        params = {"start": start, "end": end}
 
-        # Fetch all independently in parallel
-        recovery_raw, sleep_raw, workouts_raw, cycles_raw = await asyncio.gather(
-            self.get_recovery(start=start, end=end),
-            self.get_sleep(start=start, end=end),
+        recoveries, sleeps, workouts_raw, cycles = await asyncio.gather(
+            self._client.get_paginated(endpoints.RECOVERY, params=params),
+            self._client.get_paginated(endpoints.SLEEP, params=params),
             self.get_workouts(start=start, end=end),
             self.get_cycles(start=start, end=end),
         )
 
-        activity = None
-        if cycles_raw:
-            activity = map_cycle(cycles_raw[0])
-            activity.workouts = [map_workout(w) for w in workouts_raw]
+        if date is None:
+            date = self._local_today(cycles)
 
-        return DailyHealth(
-            source="whoop",
-            date=date,
-            fetched_at=datetime.now(tz=timezone.utc).isoformat(),
-            sleep=map_sleep(sleep_raw) if sleep_raw else None,
-            recovery=map_recovery(recovery_raw) if recovery_raw else None,
-            activity=activity,
+        cycle = next((c for c in cycles if _cycle_day(c) == date), None)
+        if cycle is None:
+            return DailyHealth(source="whoop", date=date, fetched_at=_utcnow().isoformat())
+
+        health = _build_daily_health(cycle, date, recoveries, sleeps)
+        cycle_start = _parse_ts(cycle.get("start"))
+        cycle_end = _parse_ts(cycle.get("end"))
+        health.activity.workouts = [
+            map_workout(w) for w in workouts_raw
+            if (ws := _parse_ts(w.get("start"))) is not None
+            and ws >= cycle_start
+            and (cycle_end is None or ws < cycle_end)
+        ]
+        return health
+
+    @staticmethod
+    def _local_today(cycles: list[dict]) -> str:
+        """Today's date in the user's timezone, taken from the latest cycle (UTC if none)."""
+        latest = max(
+            (c for c in cycles if _parse_ts(c.get("start"))),
+            key=lambda c: _parse_ts(c["start"]),
+            default=None,
         )
+        tz = _parse_offset(latest.get("timezone_offset")) if latest else timezone.utc
+        return _utcnow().astimezone(tz).date().isoformat()
 
     @staticmethod
     def _date_params(start: str | None, end: str | None) -> dict | None:
