@@ -1,0 +1,46 @@
+#!/path/to/whoop_connecter/.venv/bin/python -I
+"""Start the WHOOP stdio MCP server with secrets from an env file.
+
+Keeps WHOOP_CLIENT_SECRET and WHOOP_TOKEN_ENCRYPTION_KEY out of the
+OpenClaw config. Copy this file, adjust the paths below, chmod 755.
+The env file must be readable only by the gateway user (chmod 600).
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import sys
+
+from dotenv import dotenv_values
+
+ENV_FILE = Path('/path/to/whoop.env')
+SERVER = '/path/to/whoop_connecter/.venv/bin/whoop-mcp'
+ALLOWED = {
+    'WHOOP_CLIENT_ID', 'WHOOP_CLIENT_SECRET', 'WHOOP_REDIRECT_URI',
+    'WHOOP_TOKEN_PATH', 'WHOOP_CACHE_TTL', 'WHOOP_TOKEN_ENCRYPTION_KEY',
+    'LOG_LEVEL',
+}
+REQUIRED = {'WHOOP_CLIENT_ID', 'WHOOP_CLIENT_SECRET', 'WHOOP_TOKEN_ENCRYPTION_KEY'}
+
+
+def main() -> int:
+    try:
+        values = dotenv_values(ENV_FILE, interpolate=False)
+    except OSError:
+        values = {}
+    if any(not values.get(key) for key in REQUIRED):
+        # stderr only: stdout belongs to the MCP protocol
+        print('WHOOP MCP: env file is unavailable or incomplete.', file=sys.stderr)
+        return 78
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith('WHOOP_') and k not in {'PYTHONPATH', 'PYTHONHOME'}}
+    env.update({k: v for k, v in values.items() if k in ALLOWED and v is not None})
+    env['PYTHONNOUSERSITE'] = '1'
+    # A missing or stale token file must not stop the server: each tool call
+    # reports AUTH_REQUIRED / REAUTH_REQUIRED itself.
+    os.execve(SERVER, [SERVER], env)
+    return 0  # unreachable
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
