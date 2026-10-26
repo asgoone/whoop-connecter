@@ -78,7 +78,11 @@ def summary(
 ):
     """Show daily health summary with recommendation."""
     service = _get_service()
-    result = _run(_run_with_cleanup(service, service.get_daily_summary(date=date)))
+    try:
+        result = _run(_run_with_cleanup(service, service.get_daily_summary(date=date)))
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
 
     if raw:
         console.print_json(json.dumps(result.to_dict()))

@@ -213,3 +213,24 @@ class TestDayHelpers:
     async def test_invalid_date_rejected(self, service):
         with pytest.raises(ValueError, match="YYYY-MM-DD"):
             await service.get_daily_summary(date="26.10.2026")
+
+
+class TestParseTimestamp:
+    @pytest.mark.parametrize("value", [
+        "2026-10-25T23:55:59Z",
+        "2026-10-25T23:55:59.3Z",
+        "2026-10-25T23:55:59.37Z",
+        "2026-10-25T23:55:59.370Z",
+        "2026-10-25T23:55:59.3701234Z",
+        "2026-10-26T02:55:59.370+03:00",
+    ])
+    async def test_fraction_lengths_parse_to_same_second(self, value):
+        from whoop.services import _parse_ts
+        ts = _parse_ts(value)
+        assert ts is not None
+        assert ts.astimezone(timezone.utc).replace(microsecond=0).isoformat() == "2026-10-25T23:55:59+00:00"
+
+    @pytest.mark.parametrize("value", [None, "", "not-a-date"])
+    async def test_invalid_returns_none(self, value):
+        from whoop.services import _parse_ts
+        assert _parse_ts(value) is None

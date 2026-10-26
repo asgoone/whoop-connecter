@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import date as date_cls, datetime, timedelta, timezone
 
 from .api.client import WhoopClient
@@ -27,12 +28,20 @@ def _utcnow() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
+_FRACTION_RE = re.compile(r"\.(\d+)")
+
+
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
         return None
+    # Python 3.10 fromisoformat accepts only 3- or 6-digit fractions; normalize to 6
+    normalized = _FRACTION_RE.sub(
+        lambda m: "." + m.group(1)[:6].ljust(6, "0"), value.replace("Z", "+00:00"), count=1
+    )
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(normalized)
     except ValueError:
+        logger.warning("Unparseable WHOOP timestamp skipped")
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 

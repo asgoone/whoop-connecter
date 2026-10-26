@@ -67,3 +67,11 @@ def test_data_command_with_network_failure_exits_4(env):
         result = runner.invoke(app, ["raw", "profile"])
     assert result.exit_code == 4
     assert "TRANSIENT_ERROR" in result.output
+
+
+def test_summary_with_invalid_date_exits_1_without_traceback(env):
+    TokenStore(str(env)).save(TokenData("a", "r", time.time() + 3600))
+    result = runner.invoke(app, ["summary", "--date", "2026-13-01"])
+    assert result.exit_code == 1
+    assert "YYYY-MM-DD" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
