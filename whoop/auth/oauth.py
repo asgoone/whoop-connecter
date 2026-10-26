@@ -373,6 +373,10 @@ class WhoopOAuth:
                 raise WhoopError(ErrorCode.INSUFFICIENT_SCOPE, message)
             if oauth_error in ("invalid_grant", "unauthorized_client"):
                 raise WhoopError(ErrorCode.REAUTH_REQUIRED, message)
+            if status == 400 and oauth_error == "invalid_request":
+                # WHOOP answers an unknown/revoked refresh token with 400 invalid_request
+                # (observed in production), not invalid_grant
+                raise WhoopError(ErrorCode.REAUTH_REQUIRED, message)
             if status in (400, 401) and oauth_error is None:
                 # RFC 6749 rejections without a parseable code: treat the grant as unusable
                 raise WhoopError(ErrorCode.REAUTH_REQUIRED, message)

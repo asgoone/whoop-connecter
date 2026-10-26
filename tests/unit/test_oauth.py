@@ -122,7 +122,8 @@ class TestRefreshFailures:
     @pytest.mark.parametrize("status,error,code", [
         (400, "invalid_grant", ErrorCode.REAUTH_REQUIRED),
         (400, "unauthorized_client", ErrorCode.REAUTH_REQUIRED),
-        (400, "invalid_request", ErrorCode.API_ERROR),
+        (400, "invalid_request", ErrorCode.REAUTH_REQUIRED),
+        (401, "invalid_request", ErrorCode.API_ERROR),
         (403, None, ErrorCode.TRANSIENT_ERROR),
         (408, None, ErrorCode.TRANSIENT_ERROR),
         (401, "invalid_grant", ErrorCode.REAUTH_REQUIRED),
