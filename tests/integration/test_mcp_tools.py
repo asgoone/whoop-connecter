@@ -75,14 +75,17 @@ def server(mock_service):
     return create_server(mock_service)
 
 
-async def _call(server, tool_name: str, arguments: dict = None) -> str:
+async def _call_result(server, tool_name: str, arguments: dict = None):
     handler = server.request_handlers[CallToolRequest]
     req = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name=tool_name, arguments=arguments or {}),
     )
-    result = await handler(req)
-    return result.root.content[0].text
+    return (await handler(req)).root
+
+
+async def _call(server, tool_name: str, arguments: dict = None) -> str:
+    return (await _call_result(server, tool_name, arguments)).content[0].text
 
 
 class TestToolRegistration:
@@ -141,11 +144,13 @@ class TestBodyMeasurementTool:
 
 
 class TestRecoveryTool:
-    async def test_no_data_returns_error_key(self, server, mock_service):
+    async def test_no_data_is_normal_result(self, server, mock_service):
         mock_service.get_recovery = AsyncMock(return_value=None)
-        text = await _call(server, "get_recovery")
-        data = json.loads(text)
-        assert "error" in data
+        result = await _call_result(server, "get_recovery")
+        data = json.loads(result.content[0].text)
+        assert result.isError is False
+        assert data["no_data"] is True
+        assert "error" not in data
 
     async def test_with_flat_data_returns_score(self, server, mock_service):
         """Test with real flat API format."""
@@ -169,11 +174,13 @@ class TestRecoveryTool:
 
 
 class TestSleepTool:
-    async def test_no_data_returns_error_key(self, server, mock_service):
+    async def test_no_data_is_normal_result(self, server, mock_service):
         mock_service.get_sleep = AsyncMock(return_value=None)
-        text = await _call(server, "get_sleep")
-        data = json.loads(text)
-        assert "error" in data
+        result = await _call_result(server, "get_sleep")
+        data = json.loads(result.content[0].text)
+        assert result.isError is False
+        assert data["no_data"] is True
+        assert "error" not in data
 
     async def test_with_flat_data_returns_score(self, server, mock_service):
         """Test with real flat API format."""
@@ -215,11 +222,16 @@ class TestTrendsTool:
         assert data["days"] == 7
         assert len(data["metrics"]) == 5
 
-    async def test_invalid_days_returns_error(self, server, mock_service):
+    async def test_out_of_range_days_rejected_by_schema(self, server, mock_service):
+        result = await _call_result(server, "get_trends", {"days": 500})
+        assert result.isError is True
+        mock_service.get_trends.assert_not_called()
+
+    async def test_service_value_error_is_invalid_arguments(self, server, mock_service):
         mock_service.get_trends = AsyncMock(side_effect=ValueError("days must be between 1 and 90"))
-        text = await _call(server, "get_trends", {"days": 0})
-        data = json.loads(text)
-        assert "error" in data
+        result = await _call_result(server, "get_trends", {"days": 7})
+        assert result.isError is True
+        assert json.loads(result.content[0].text)["error"]["code"] == "INVALID_ARGUMENTS"
 
     async def test_default_days_is_7(self, server, mock_service):
         await _call(server, "get_trends", {})
@@ -243,5 +255,8 @@ class TestErrorHandling:
 
     async def test_value_error_returns_invalid_arguments(self, server, mock_service):
         mock_service.get_trends = AsyncMock(side_effect=ValueError("bad input"))
-        text = await _call(server, "get_trends", {"days": -1})
-        assert "Invalid arguments" in text or "bad input" in text
+        result = await _call_result(server, "get_trends", {"days": 7})
+        assert result.isError is True
+        error = json.loads(result.content[0].text)["error"]
+        assert error["code"] == "INVALID_ARGUMENTS"
+        assert error["message"] == "bad input"
