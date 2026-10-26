@@ -13,17 +13,21 @@ from whoop.api.client import WhoopClient
 pytestmark = pytest.mark.asyncio
 
 
-def _make_recovery_raw(score=70, hrv=55.0, rhr=58):
+def _cycle_id(date):
+    return int(date.replace("-", ""))
+
+
+def _make_recovery_raw(score=70, hrv=55.0, rhr=58, date="2026-03-17"):
     """Real flat API format."""
     return {
-        "cycle_id": 123,
+        "cycle_id": _cycle_id(date),
         "score_state": "SCORED",
         "recovery_score": score,
         "hrv_rmssd_milli": hrv,
         "resting_heart_rate": rhr,
         "spo2_percentage": 97.0,
         "skin_temp_celsius": 0.0,
-        "created_at": "2026-03-17T06:00:00Z",
+        "created_at": f"{date}T06:00:00Z",
     }
 
 
@@ -48,9 +52,9 @@ def _make_sleep_raw(score=82, score_state="SCORED",
 def _make_cycle_raw(date="2026-03-17", strain=10.5):
     """Real flat API format."""
     return {
-        "id": 789,
-        "start": f"{date}T19:20:00.000Z",
-        "end": f"{date}T04:35:00.000Z",
+        "id": _cycle_id(date),
+        "start": f"{date}T00:20:00.000Z",
+        "end": f"{date}T23:40:00.000Z",
         "score_state": "SCORED",
         "strain": strain,
         "kilojoule": 8000,
@@ -147,11 +151,9 @@ class TestGetSleep:
 
 class TestGetDailySummary:
     async def test_full_data_summary(self, service, mock_client):
-        mock_client.get = AsyncMock(side_effect=[
-            {"records": [_make_recovery_raw(score=74)]},
-            {"records": [_make_sleep_raw(score=82)]},
-        ])
         mock_client.get_paginated = AsyncMock(side_effect=[
+            [_make_recovery_raw(score=74)],
+            [_make_sleep_raw(score=82)],
             [_make_workout_raw()],
             [_make_cycle_raw()],
         ])
@@ -178,8 +180,7 @@ class TestGetTrends:
     async def _make_trends_data(self, mock_client, n_days=7, base_score=70):
         cycles = [_make_cycle_raw(date=f"2026-03-{10+i:02d}") for i in range(n_days)]
         recoveries = [
-            {**_make_recovery_raw(score=base_score + i),
-             "created_at": f"2026-03-{10+i:02d}T06:00:00Z"}
+            _make_recovery_raw(score=base_score + i, date=f"2026-03-{10+i:02d}")
             for i in range(n_days)
         ]
         sleeps = [
@@ -244,7 +245,7 @@ class TestGetExport:
         mock_client.get = AsyncMock(return_value=body_data)
 
         cycles = [_make_cycle_raw(date="2026-03-17")]
-        recoveries = [{**_make_recovery_raw(score=74), "created_at": "2026-03-17T06:00:00Z"}]
+        recoveries = [_make_recovery_raw(score=74)]
         sleeps = [{**_make_sleep_raw(score=82), "created_at": "2026-03-17T00:00:00Z"}]
         mock_client.get_paginated = AsyncMock(side_effect=[cycles, recoveries, sleeps])
 

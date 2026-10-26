@@ -20,9 +20,13 @@ pytestmark = pytest.mark.asyncio
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _cycle_id(date):
+    return int(date.replace("-", ""))
+
+
 def _make_recovery_raw(score=70, hrv=55.0, rhr=58, date="2026-03-17"):
     return {
-        "cycle_id": 123,
+        "cycle_id": _cycle_id(date),
         "score_state": "SCORED",
         "recovery_score": score,
         "hrv_rmssd_milli": hrv,
@@ -54,9 +58,9 @@ def _make_sleep_raw(score=82, date="2026-03-17", respiratory_rate=14.6,
 
 def _make_cycle_raw(date="2026-03-17", strain=10.5):
     return {
-        "id": 789,
-        "start": f"{date}T19:20:00.000Z",
-        "end": f"{date}T04:35:00.000Z",
+        "id": _cycle_id(date),
+        "start": f"{date}T00:20:00.000Z",
+        "end": f"{date}T23:40:00.000Z",
         "score_state": "SCORED",
         "strain": strain,
         "kilojoule": 8000,
@@ -243,11 +247,9 @@ class TestEnrichedFieldsIntegration:
             respiratory_rate=14.6,
             sleep_consistency=76,
         )
-        mock_client.get = AsyncMock(side_effect=[
-            {"records": [_make_recovery_raw()]},
-            {"records": [sleep_raw]},
-        ])
         mock_client.get_paginated = AsyncMock(side_effect=[
+            [_make_recovery_raw()],
+            [sleep_raw],
             [],  # workouts
             [_make_cycle_raw()],  # cycles
         ])
@@ -264,11 +266,9 @@ class TestEnrichedFieldsIntegration:
             altitude_gain=120.0,
             percent_recorded=98.5,
         )
-        mock_client.get = AsyncMock(side_effect=[
-            {"records": [_make_recovery_raw()]},
-            {"records": [_make_sleep_raw()]},
-        ])
         mock_client.get_paginated = AsyncMock(side_effect=[
+            [_make_recovery_raw()],
+            [_make_sleep_raw()],
             [workout_raw],
             [_make_cycle_raw()],
         ])
@@ -305,11 +305,9 @@ class TestFalsyValues:
 
     async def test_zero_recovery_score(self, service, mock_client):
         """recovery_score=0 should not become None."""
-        mock_client.get = AsyncMock(side_effect=[
-            {"records": [_make_recovery_raw(score=0, hrv=0.0, rhr=0)]},
-            {"records": [_make_sleep_raw()]},
-        ])
         mock_client.get_paginated = AsyncMock(side_effect=[
+            [_make_recovery_raw(score=0, hrv=0.0, rhr=0)],
+            [_make_sleep_raw()],
             [],
             [_make_cycle_raw()],
         ])
