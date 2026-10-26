@@ -4,6 +4,7 @@ Transport: stdio (for OpenClaw integration).
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -11,9 +12,9 @@ import sys
 from dotenv import load_dotenv
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool
 
-from whoop.api.client import WhoopAPIError
+from whoop.errors import WhoopError
 from whoop.services import WhoopService, _build_service_from_env
 
 from .tools import auth_status, body, profile, recovery, sleep, workouts, cycles, summary, trends
@@ -42,6 +43,13 @@ def _setup_logging() -> None:
     )
 
 
+def _error_result(error: dict) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps({"error": error}, indent=2))],
+        isError=True,
+    )
+
+
 def create_server(service: WhoopService) -> Server:
     server = Server("whoop-mcp")
 
@@ -53,21 +61,22 @@ def create_server(service: WhoopService) -> Server:
         return tool_list
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    async def call_tool(name: str, arguments: dict) -> CallToolResult:
         mod = tool_map.get(name)
         if mod is None:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return _error_result({"code": "UNKNOWN_TOOL", "message": f"Unknown tool: {name}"})
         try:
             result = await mod.handle(arguments or {}, service)
-        except WhoopAPIError as exc:
-            logger.warning("WHOOP API error in tool %s: %s", name, exc)
-            return [TextContent(type="text", text=f"WHOOP API error ({exc.status_code}): {exc}")]
+        except WhoopError as exc:
+            logger.warning("Tool %s failed: %s", name, exc.code.value)
+            return _error_result(exc.to_dict())
         except ValueError as exc:
-            return [TextContent(type="text", text=f"Invalid arguments: {exc}")]
+            return _error_result({"code": "INVALID_ARGUMENTS", "message": str(exc)})
         except Exception as exc:
+            # Exception text may contain request details; keep it in stderr logs only
             logger.exception("Unexpected error in tool %s", name)
-            return [TextContent(type="text", text=f"Internal error: {exc}")]
-        return [TextContent(type="text", text=result)]
+            return _error_result({"code": "INTERNAL_ERROR", "message": type(exc).__name__})
+        return CallToolResult(content=[TextContent(type="text", text=result)], isError=False)
 
     return server
 
@@ -80,6 +89,9 @@ async def run() -> None:
         service = _build_service_from_env()
     except KeyError as exc:
         logger.error("Missing required environment variable: %s", exc)
+        sys.exit(1)
+    except (EnvironmentError, ValueError) as exc:
+        logger.error("Configuration error: %s", exc)
         sys.exit(1)
 
     server = create_server(service)

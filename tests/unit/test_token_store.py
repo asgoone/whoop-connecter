@@ -9,6 +9,7 @@ import time
 import pytest
 from pathlib import Path
 from whoop.auth.token_store import TokenStore, TokenData
+from whoop.errors import ErrorCode, WhoopError
 
 
 KEY_HEX = "a" * 64  # 32 bytes of 0xaa — valid AES-256 key
@@ -55,28 +56,47 @@ class TestTokenStore:
     def test_clear_nonexistent_does_not_raise(self, store):
         store.clear()  # должно быть тихим
 
-    def test_corrupted_file_too_short_returns_none(self, store):
+    def test_corrupted_file_too_short_raises_and_preserves_file(self, store):
         store._path.parent.mkdir(parents=True, exist_ok=True)
         store._path.write_bytes(b"short")  # < 12 bytes (nonce size)
-        assert store.load() is None
-        assert not store._path.exists()  # должен быть удалён
+        with pytest.raises(WhoopError) as exc_info:
+            store.load()
+        assert exc_info.value.code == ErrorCode.TOKEN_STORE_ERROR
+        assert store._path.read_bytes() == b"short"
 
-    def test_wrong_key_decryption_fails_returns_none(self, tmp_path, monkeypatch, sample_tokens):
+    def test_wrong_key_raises_and_preserves_file(self, tmp_path, monkeypatch, sample_tokens):
         monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
         store1 = TokenStore(str(tmp_path / "tokens.enc"))
         store1.save(sample_tokens)
+        original = (tmp_path / "tokens.enc").read_bytes()
 
-        # Другой ключ
         monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", "b" * 64)
         store2 = TokenStore(str(tmp_path / "tokens.enc"))
-        result = store2.load()
-        assert result is None
-        assert not (tmp_path / "tokens.enc").exists()
+        with pytest.raises(WhoopError) as exc_info:
+            store2.load()
+        assert exc_info.value.code == ErrorCode.TOKEN_STORE_ERROR
+        assert (tmp_path / "tokens.enc").read_bytes() == original
 
-    def test_random_bytes_decryption_fails_returns_none(self, store):
+        # The correct key still reads the preserved file
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        assert TokenStore(str(tmp_path / "tokens.enc")).load().access_token == "access_abc"
+
+    def test_random_bytes_raises(self, store):
         store._path.parent.mkdir(parents=True, exist_ok=True)
         store._path.write_bytes(os.urandom(100))  # random ciphertext
-        assert store.load() is None
+        with pytest.raises(WhoopError):
+            store.load()
+        assert store._path.exists()
+
+    def test_error_message_has_no_secrets(self, tmp_path, monkeypatch, sample_tokens):
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        TokenStore(str(tmp_path / "tokens.enc")).save(sample_tokens)
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", "b" * 64)
+        with pytest.raises(WhoopError) as exc_info:
+            TokenStore(str(tmp_path / "tokens.enc")).load()
+        text = str(exc_info.value)
+        assert KEY_HEX not in text and "b" * 64 not in text
+        assert exc_info.value.__cause__ is None
 
     def test_missing_env_var_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("WHOOP_TOKEN_ENCRYPTION_KEY", raising=False)
@@ -117,3 +137,65 @@ class TestTokenStore:
         store.save(tokens)
         loaded = store.load()
         assert loaded.refresh_token == ""
+
+
+class TestTokenStoreRobustness:
+    def test_interrupted_write_keeps_previous_file(self, store, sample_tokens, monkeypatch):
+        store.save(sample_tokens)
+        before = store._path.read_bytes()
+
+        def _boom(_fd):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("whoop.auth.token_store.os.fsync", _boom)
+        with pytest.raises(WhoopError) as exc_info:
+            store.save(TokenData(access_token="new", refresh_token="new", expires_at=time.time() + 10))
+
+        assert exc_info.value.code == ErrorCode.TOKEN_STORE_ERROR
+        assert store._path.read_bytes() == before
+        leftovers = [p.name for p in store._path.parent.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+    def test_temp_file_is_0600_before_replace(self, store, sample_tokens, monkeypatch):
+        real_replace = os.replace
+        modes = []
+
+        def _spy(src, dst):
+            modes.append(os.stat(src).st_mode & 0o777)
+            real_replace(src, dst)
+
+        monkeypatch.setattr("whoop.auth.token_store.os.replace", _spy)
+        old_umask = os.umask(0)  # even a permissive umask must not widen permissions
+        try:
+            store.save(sample_tokens)
+        finally:
+            os.umask(old_umask)
+        assert modes == [0o600]
+        assert os.stat(store._path).st_mode & 0o777 == 0o600
+
+    def test_scope_roundtrip(self, store):
+        store.save(TokenData(access_token="a", refresh_token="r", expires_at=time.time() + 10, scope="offline read:sleep"))
+        assert store.load().scope == "offline read:sleep"
+
+    def test_legacy_file_without_scope_loads(self, store):
+        import json as _json
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        nonce = os.urandom(12)
+        plaintext = _json.dumps({"access_token": "a", "refresh_token": "r", "expires_at": 1.0}).encode()
+        store._path.parent.mkdir(parents=True, exist_ok=True)
+        store._path.write_bytes(nonce + AESGCM(bytes.fromhex(KEY_HEX)).encrypt(nonce, plaintext, None))
+        loaded = store.load()
+        assert loaded.refresh_token == "r"
+        assert loaded.scope is None
+
+    def test_lock_is_exclusive_and_times_out(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        holder = TokenStore(str(tmp_path / "tokens.enc"))
+        waiter = TokenStore(str(tmp_path / "tokens.enc"), lock_timeout=0.2)
+        with holder.lock():
+            with pytest.raises(WhoopError) as exc_info:
+                with waiter.lock():
+                    pass
+        assert exc_info.value.code == ErrorCode.TRANSIENT_ERROR
+        with waiter.lock():  # released after holder exits
+            pass
