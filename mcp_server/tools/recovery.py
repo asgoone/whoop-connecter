@@ -31,7 +31,7 @@ async def handle(arguments: dict, service: WhoopService) -> str:
         end=arguments.get("end"),
     )
     if raw is None:
-        return json.dumps({"error": "No recovery data found for the requested period."})
+        return json.dumps({"no_data": True, "message": "No recovery recorded for the requested period."})
 
     mapped = map_recovery(raw)
     return json.dumps({

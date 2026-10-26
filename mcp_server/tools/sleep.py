@@ -25,7 +25,7 @@ async def handle(arguments: dict, service: WhoopService) -> str:
         end=arguments.get("end"),
     )
     if raw is None:
-        return json.dumps({"error": "No sleep data found for the requested period."})
+        return json.dumps({"no_data": True, "message": "No sleep recorded for the requested period."})
 
     mapped = map_sleep(raw)
     return json.dumps({
