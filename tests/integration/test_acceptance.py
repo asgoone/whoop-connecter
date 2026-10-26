@@ -93,7 +93,7 @@ def mock_client():
 @pytest.fixture
 def mock_oauth():
     oauth = MagicMock()
-    oauth.ensure_valid_token.return_value = "token"
+    oauth.get_access_token.return_value = "token"
     oauth.token_status.return_value = {
         "authenticated": True,
         "expires_at": "2026-03-17T12:00:00+00:00",
@@ -108,76 +108,61 @@ def service(mock_client, mock_oauth):
 
 
 # ===========================================================================
-# Acceptance: token_status with silent refresh
+# Acceptance: token_status is passive (no refresh, no network)
 # ===========================================================================
 
-class TestTokenStatusRefresh:
-    """token_status() should attempt silent refresh when token is expired."""
+def _oauth_with_store(store) -> WhoopOAuth:
+    config = OAuthConfig(
+        client_id="test_id",
+        client_secret="test_secret",
+        redirect_uri="http://localhost:8080/callback",
+    )
+    return WhoopOAuth(config=config, store=store)
 
-    def test_expired_token_refreshed_silently(self):
-        """If token is expired but refresh succeeds, status reports not expired."""
+
+class TestTokenStatusPassive:
+    """token_status() reports stored state and never refreshes."""
+
+    def test_expired_token_reports_refresh_needed_without_refresh(self):
         store = MagicMock(spec=TokenStore)
-        expired_tokens = TokenData(
-            access_token="old",
-            refresh_token="refresh_tok",
-            expires_at=time.time() - 3600,  # expired 1h ago
+        store.load.return_value = TokenData(
+            access_token="old", refresh_token="refresh_tok", expires_at=time.time() - 3600,
         )
-        refreshed_tokens = TokenData(
-            access_token="new",
-            refresh_token="new_refresh",
-            expires_at=time.time() + 3600,  # valid for 1h
-        )
-        # First load returns expired, second (after refresh) returns fresh
-        store.load.side_effect = [expired_tokens, refreshed_tokens]
+        oauth = _oauth_with_store(store)
 
-        config = OAuthConfig(
-            client_id="test_id",
-            client_secret="test_secret",
-            redirect_uri="http://localhost:8080/callback",
-        )
-        oauth = WhoopOAuth(config=config, store=store)
-
-        with patch.object(oauth, "_refresh", return_value="new"):
+        with patch("whoop.auth.oauth.httpx.post") as post:
             status = oauth.token_status()
 
+        post.assert_not_called()
+        store.save.assert_not_called()
+        assert status["state"] == "refresh_needed"
+        assert status["expired"] is True
         assert status["authenticated"] is True
+
+    def test_expired_without_refresh_token_is_reauth_required(self):
+        store = MagicMock(spec=TokenStore)
+        store.load.return_value = TokenData(
+            access_token="old", refresh_token="", expires_at=time.time() - 3600,
+        )
+        status = _oauth_with_store(store).token_status()
+        assert status["state"] == "reauth_required"
+        assert status["authenticated"] is False
+
+    def test_valid_token(self):
+        store = MagicMock(spec=TokenStore)
+        store.load.return_value = TokenData(
+            access_token="a", refresh_token="r", expires_at=time.time() + 3600,
+        )
+        status = _oauth_with_store(store).token_status()
+        assert status["state"] == "valid"
         assert status["expired"] is False
 
-    def test_expired_token_refresh_fails_reports_expired(self):
-        """If token is expired and refresh fails, status reports expired."""
-        store = MagicMock(spec=TokenStore)
-        expired_tokens = TokenData(
-            access_token="old",
-            refresh_token="refresh_tok",
-            expires_at=time.time() - 3600,
-        )
-        store.load.return_value = expired_tokens
-
-        config = OAuthConfig(
-            client_id="test_id",
-            client_secret="test_secret",
-            redirect_uri="http://localhost:8080/callback",
-        )
-        oauth = WhoopOAuth(config=config, store=store)
-
-        with patch.object(oauth, "_refresh", side_effect=RuntimeError("network error")):
-            status = oauth.token_status()
-
-        assert status["authenticated"] is True
-        assert status["expired"] is True
-
     def test_no_tokens_returns_not_authenticated(self):
-        """If no tokens stored, status is unauthenticated."""
         store = MagicMock(spec=TokenStore)
         store.load.return_value = None
+        status = _oauth_with_store(store).token_status()
 
-        config = OAuthConfig(
-            client_id="id", client_secret="secret",
-            redirect_uri="http://localhost:8080/callback",
-        )
-        oauth = WhoopOAuth(config=config, store=store)
-        status = oauth.token_status()
-
+        assert status["state"] == "auth_required"
         assert status["authenticated"] is False
         assert status["expired"] is None
 

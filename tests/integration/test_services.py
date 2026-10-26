@@ -83,7 +83,7 @@ def mock_client():
 @pytest.fixture
 def mock_oauth():
     oauth = MagicMock()
-    oauth.ensure_valid_token.return_value = "token"
+    oauth.get_access_token.return_value = "token"
     oauth.token_status.return_value = {"authenticated": True, "expires_at": "...", "expired": False}
     return oauth
 

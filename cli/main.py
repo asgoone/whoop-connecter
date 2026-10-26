@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
+from whoop.errors import ErrorCode, WhoopError
 from whoop.services import WhoopService, _build_service_from_env
 
 load_dotenv()
@@ -22,18 +23,41 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+err_console = Console(stderr=True)
+
+# Exit codes let wrappers/agents tell "owner must act" from "retry later".
+_EXIT_CODES = {
+    ErrorCode.AUTH_REQUIRED: 3,
+    ErrorCode.REAUTH_REQUIRED: 3,
+    ErrorCode.INSUFFICIENT_SCOPE: 3,
+    ErrorCode.TRANSIENT_ERROR: 4,
+    ErrorCode.RATE_LIMITED: 4,
+    ErrorCode.TOKEN_STORE_ERROR: 5,
+    ErrorCode.CONFIG_ERROR: 5,
+}
 
 
 def _get_service() -> WhoopService:
     try:
         return _build_service_from_env()
-    except (KeyError, EnvironmentError) as exc:
-        console.print(f"[red]Configuration error:[/red] {exc}")
-        raise typer.Exit(1)
+    except (KeyError, EnvironmentError, ValueError) as exc:
+        err_console.print(f"[red]Configuration error:[/red] {exc}")
+        raise typer.Exit(5)
+
+
+def _fail(exc: WhoopError) -> typer.Exit:
+    err_console.print(f"[red]{exc.code.value}:[/red] {exc.message}")
+    err_console.print(exc.hint)
+    if exc.retry_after is not None:
+        err_console.print(f"Retry after {exc.retry_after:.0f}s")
+    return typer.Exit(_EXIT_CODES.get(exc.code, 1))
 
 
 def _run(coro):
-    return asyncio.run(coro)
+    try:
+        return asyncio.run(coro)
+    except WhoopError as exc:
+        raise _fail(exc)
 
 
 async def _run_with_cleanup(service: WhoopService, coro):
@@ -234,41 +258,80 @@ def trends(
 
 @app.command()
 def auth(
-    action: str = typer.Argument("status", help="status | login | login-headless | logout"),
+    action: str = typer.Argument("status", help="status | check | login | login-headless | logout"),
 ):
-    """Manage WHOOP OAuth token (status / login / login-headless / logout)."""
+    """Manage WHOOP OAuth (status / check / login / login-headless / logout).
+
+    status — reads the token file only (no network, no refresh);
+    check  — real API call: proves the token works, refreshes if needed;
+    login, login-headless — explicit interactive login.
+    """
     service = _get_service()
 
     if action == "status":
         status = service.auth_status()
-        if status["authenticated"]:
-            expired = status.get("expired")
-            color = "red" if expired else "green"
-            label = "EXPIRED" if expired else "valid"
-            console.print(
-                f"[{color}]Authenticated[/{color}] — token is {label}, "
-                f"expires at {status['expires_at']}"
-            )
+        _print_auth_status(status)
+        if not status["authenticated"]:
+            raise typer.Exit(5 if status["state"] == "store_error" else 3)
+
+    elif action == "check":
+        result = _run(_run_with_cleanup(service, service.auth_check()))
+        _print_auth_status(result)
+        check = result["check"]
+        if check["ok"]:
+            console.print("[green]Check OK:[/green] WHOOP API accepted the token.")
         else:
-            console.print("[red]Not authenticated.[/red] Run: whoop auth login")
+            code = ErrorCode(check["code"])
+            err_console.print(f"[red]Check failed — {code.value}:[/red] {check['message']}")
+            err_console.print(check["hint"])
+            raise typer.Exit(_EXIT_CODES.get(code, 1))
 
-    elif action == "login":
-        console.print("Starting OAuth flow (browser)...")
-        token = service.login()
-        console.print("[green]Authentication successful.[/green]")
-
-    elif action == "login-headless":
-        console.print("Starting headless OAuth flow (for VPS / bot)...")
-        token = service.login_headless()
-        console.print("[green]Authentication successful.[/green]")
+    elif action in ("login", "login-headless"):
+        try:
+            if action == "login":
+                console.print("Starting OAuth flow (browser)...")
+                service.login()
+            else:
+                console.print("Starting headless OAuth flow (for VPS)...")
+                service.login_headless()
+        except WhoopError as exc:
+            raise _fail(exc)
+        except (RuntimeError, OSError, EOFError) as exc:  # TimeoutError is an OSError
+            err_console.print(f"[red]Login failed:[/red] {exc or type(exc).__name__}")
+            raise typer.Exit(1)
+        console.print("[green]Authentication successful.[/green] Verify with: whoop auth check")
 
     elif action == "logout":
-        service.logout()
+        try:
+            service.logout()
+        except WhoopError as exc:
+            raise _fail(exc)
         console.print("[yellow]Logged out. Token cleared.[/yellow]")
 
     else:
-        console.print(f"[red]Unknown action:[/red] {action}. Use: status, login, login-headless, logout")
+        err_console.print(
+            f"[red]Unknown action:[/red] {action}. Use: status, check, login, login-headless, logout"
+        )
         raise typer.Exit(1)
+
+
+def _print_auth_status(status: dict) -> None:
+    state = status["state"]
+    color = {"valid": "green", "refresh_needed": "yellow"}.get(state, "red")
+    console.print(f"State: [{color}]{state}[/{color}]")
+    if status.get("expires_at"):
+        console.print(f"Access token expires at: {status['expires_at']}")
+    if "has_refresh_token" in status:
+        console.print(f"Refresh token stored: {'yes' if status['has_refresh_token'] else 'no'}")
+    if status.get("missing_scopes"):
+        console.print(f"[red]Missing scopes:[/red] {' '.join(status['missing_scopes'])}")
+    if state == "auth_required":
+        console.print("Not logged in. Run: whoop auth login-headless")
+    elif state == "reauth_required":
+        console.print("Re-login required. Run: whoop auth login-headless")
+    elif state == "store_error":
+        console.print(f"[red]{status['error']['message']}[/red]")
+        console.print(status["error"]["hint"])
 
 
 @app.command()

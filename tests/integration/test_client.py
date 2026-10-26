@@ -9,6 +9,7 @@ import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from whoop.api.client import WhoopClient, WhoopAPIError
+from whoop.errors import ErrorCode, WhoopError
 
 
 pytestmark = pytest.mark.asyncio
@@ -19,9 +20,14 @@ def mock_token():
     return "test_access_token"
 
 
+async def _no_sleep(_seconds):
+    return None
+
+
 @pytest.fixture
 def client(mock_token):
     c = WhoopClient(token_getter=lambda: mock_token, cache_ttl=300)
+    c._sleep = _no_sleep
     return c
 
 
@@ -70,8 +76,11 @@ class TestWhoopClientGet:
         assert client._http.get.call_count == 2
 
     async def test_401_retried_with_new_token(self):
-        tokens = iter(["expired_token", "fresh_token"])
-        client = WhoopClient(token_getter=lambda: next(tokens), cache_ttl=0)
+        client = WhoopClient(
+            token_getter=lambda: "expired_token",
+            token_refresher=lambda rejected: "fresh_token",
+            cache_ttl=0,
+        )
 
         responses = [
             _make_response(401, {"message": "Unauthorized"}),
@@ -145,12 +154,13 @@ class TestWhoopClientPaginated:
         results = await client.get_paginated("/v1/workout")
         assert [r["id"] for r in results] == [1, 2, 3]
 
-    async def test_max_pages_stops_infinite_loop(self, client):
+    async def test_max_pages_raises_incomplete_data(self, client):
         infinite_page = {"records": [{"id": 1}], "next_token": "keep_going"}
         client._http.get = AsyncMock(return_value=_make_response(200, infinite_page))
 
-        results = await client.get_paginated("/v1/workout", max_pages=3)
-        assert len(results) == 3
+        with pytest.raises(WhoopError) as exc_info:
+            await client.get_paginated("/v1/workout", max_pages=3)
+        assert exc_info.value.code == ErrorCode.INCOMPLETE_DATA
         assert client._http.get.call_count == 3
 
     async def test_empty_records_returns_empty_list(self, client):

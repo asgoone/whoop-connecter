@@ -14,6 +14,7 @@ from .api.client import WhoopClient
 from .api import endpoints
 from .auth.oauth import OAuthConfig, WhoopOAuth
 from .auth.token_store import TokenStore
+from .errors import WhoopError
 from .analytics.daily_summary import DailySummary, build_daily_summary
 from .analytics.trends import TrendReport, build_trends
 from .schema.mappers import map_body_measurement, map_cycle, map_recovery, map_sleep, map_workout
@@ -40,7 +41,8 @@ def _build_service_from_env() -> "WhoopService":
         store=store,
     )
     client = WhoopClient(
-        token_getter=oauth.ensure_valid_token,
+        token_getter=oauth.get_access_token,
+        token_refresher=oauth.force_refresh,
         cache_ttl=cache_ttl,
     )
     return WhoopService(client=client, oauth=oauth)
@@ -59,14 +61,29 @@ class WhoopService:
     # ------------------------------------------------------------------
 
     def auth_status(self) -> dict:
+        """Passive status from the token file: no network, no refresh."""
         return self._oauth.token_status()
 
-    def login(self) -> str:
-        return self._oauth.ensure_valid_token()
+    async def auth_check(self) -> dict:
+        """Active check: refreshes if needed and calls the profile endpoint.
 
-    def login_headless(self) -> str:
-        """Headless OAuth for VPS / bot. Prints URL, prompts for callback."""
-        return self._oauth.authorize_headless()
+        Returns the passive status plus "check": {"ok": bool, ...error}.
+        Never returns profile data.
+        """
+        try:
+            await self._client.get(endpoints.PROFILE, use_cache=False)
+            check = {"ok": True}
+        except WhoopError as exc:
+            check = {"ok": False, **exc.to_dict()}
+        return {**self._oauth.token_status(), "check": check}
+
+    def login(self) -> None:
+        """Explicit interactive login with a local browser."""
+        self._oauth.login_browser()
+
+    def login_headless(self) -> None:
+        """Explicit headless login for VPS: prints URL, prompts for callback URL."""
+        self._oauth.login_headless()
 
     def logout(self) -> None:
         self._oauth.revoke()

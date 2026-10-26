@@ -234,10 +234,12 @@ class TestErrorHandling:
         text = await _call(server, "get_recovery")
         assert "429" in text or "Rate limited" in text
 
-    async def test_unexpected_error_returns_internal_error(self, server, mock_service):
-        mock_service.get_profile = AsyncMock(side_effect=RuntimeError("Unexpected!"))
+    async def test_unexpected_error_returns_internal_error_without_details(self, server, mock_service):
+        mock_service.get_profile = AsyncMock(side_effect=RuntimeError("secret detail"))
         text = await _call(server, "get_profile")
-        assert "Internal error" in text or "Unexpected" in text
+        data = json.loads(text)
+        assert data["error"]["code"] == "INTERNAL_ERROR"
+        assert "secret detail" not in text
 
     async def test_value_error_returns_invalid_arguments(self, server, mock_service):
         mock_service.get_trends = AsyncMock(side_effect=ValueError("bad input"))
