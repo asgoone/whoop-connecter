@@ -64,13 +64,34 @@ OpenClaw Gateway → Coach → Telegram
 
 ### Аутентификация
 
-При первом запуске выполняется **OAuth 2.0 с PKCE**:
+Вход выполняется **только явной командой** `whoop auth login` / `whoop auth login-headless` (OAuth 2.0 с PKCE). Обычные команды CLI и вызовы MCP никогда не открывают браузер, не ждут ввода и не поднимают callback-сервер: без токенов они возвращают ошибку `AUTH_REQUIRED`.
 
 1. Открывается браузер → страница авторизации WHOOP.
 2. На `localhost:8080/callback` ловится redirect с кодом.
 3. Параметр `state` верифицируется для защиты от CSRF.
 4. Токены шифруются **AES-256-GCM** и сохраняются на диск (`~/.whoop/tokens.enc`).
 5. При следующих запросах токен обновляется автоматически через refresh token.
+
+#### Надёжность токенов
+
+- WHOOP ротирует **оба** токена при каждом refresh, а параллельный refresh со старым токеном отклоняется. Поэтому refresh выполняется под межпроцессной блокировкой (`tokens.enc.lock`, flock) с перечитыванием файла после захвата: токен, уже обновлённый другим процессом, переиспользуется.
+- После `401` при «живом» по локальным часам токене выполняется **один** принудительный refresh и **один** повтор запроса; повторный `401` — ошибка `REAUTH_REQUIRED`.
+- Запись атомарная: временный файл с правами 600 с момента создания → fsync → rename. Файл, который не удалось прочитать или расшифровать (например, неверный ключ), **не удаляется** — возвращается ошибка `TOKEN_STORE_ERROR`.
+- Таймауты, 5xx и 429 не трогают токены. `Retry-After` соблюдается (до 10 с ждём сами, дольше — ошибка `RATE_LIMITED` с `retry_after_seconds`).
+- **Токенами должен владеть один хост.** Локальная блокировка не защищает от другой машины, которая обновляет тот же refresh token: при переносе отключите WHOOP на старом сервере.
+
+#### Коды ошибок
+
+| Код | Что значит | Код выхода CLI |
+|-----|------------|----------------|
+| `AUTH_REQUIRED` | токенов нет — нужен вход | 3 |
+| `REAUTH_REQUIRED` | refresh token отклонён / согласие отозвано — нужен повторный вход | 3 |
+| `INSUFFICIENT_SCOPE` | нет нужного scope (403) — повторный вход | 3 |
+| `TRANSIENT_ERROR` | таймаут, сеть, 5xx — повторить позже | 4 |
+| `RATE_LIMITED` | 429 — повторить позже | 4 |
+| `TOKEN_STORE_ERROR` | файл токенов не читается (ключ/повреждение), файл сохранён | 5 |
+| `CONFIG_ERROR` | неверные client id/secret или env | 5 |
+| `INCOMPLETE_DATA` | пагинация упёрлась в лимит страниц | 1 |
 
 Для VPS без браузера доступен **headless-режим** — см. [Развёртывание на VPS](#развёртывание-на-vps).
 
@@ -251,8 +272,10 @@ whoop auth login-headless
 ### 2. Проверка
 
 ```bash
-whoop auth status
-# → Authenticated — token is valid, expires at 2026-03-18T08:00:00+00:00
+whoop auth status   # пассивно: только чтение файла токенов
+# → State: valid
+whoop auth check    # реальный запрос к WHOOP
+# → Check OK: WHOOP API accepted the token.
 
 whoop summary
 # → 🟢 Recovery 74% | Sleep 85 | HRV 61 | RHR 55 | Strain 8.3
@@ -326,13 +349,14 @@ whoop export --days 14 --output data.json  # в файл
 #### `whoop auth` — управление авторизацией
 
 ```bash
-whoop auth status          # проверить статус токена
-whoop auth login           # авторизация через браузер
-whoop auth login-headless  # авторизация без браузера (VPS)
+whoop auth status          # пассивный статус: читает файл, без сети и без refresh
+whoop auth check           # активная проверка: refresh при необходимости + запрос профиля
+whoop auth login           # явная авторизация через браузер
+whoop auth login-headless  # явная авторизация без браузера (VPS)
 whoop auth logout          # удалить токен
 ```
 
-`auth status` автоматически пробует обновить токен через refresh, если он истёк, и показывает актуальный статус.
+`auth status` возвращает `state`: `valid`, `refresh_needed`, `auth_required`, `reauth_required` или `store_error`. Он не делает refresh, поэтому не может доказать, что refresh token ещё принимается WHOOP; для этого — `auth check`.
 
 #### `whoop raw` — сырые данные API (отладка)
 
@@ -505,15 +529,21 @@ MCP-сервер предоставляет **9 инструментов**. Coac
 
 ### `get_auth_status`
 
-Статус OAuth-токена. Автоматически пытается обновить токен через refresh, если он истёк.
+Статус авторизации WHOOP. По умолчанию пассивный (читает только файл токенов, без сети). С аргументом `verify: true` делает реальный запрос к WHOOP и добавляет поле `check` (`ok` или код ошибки, например `REAUTH_REQUIRED`).
+
+Ошибки всех инструментов возвращаются с `isError: true` и телом `{"error": {"code", "message", "hint"}}`.
 
 **Возвращает:**
 
 ```json
 {
+  "state": "valid",
   "authenticated": true,
   "expires_at": "2026-03-18T08:00:00+00:00",
-  "expired": false
+  "expired": false,
+  "has_refresh_token": true,
+  "scopes": ["offline", "read:body_measurement", "..."],
+  "missing_scopes": []
 }
 ```
 
@@ -606,6 +636,7 @@ nano .env   # CLIENT_ID, CLIENT_SECRET, ENCRYPTION_KEY
 5. Браузер перенаправит на `localhost:8080/callback?code=...&state=...` — скопируйте **полный URL** из адресной строки.
 6. Вставьте URL в терминал VPS.
 7. Токены сохраняются, далее обновление происходит автоматически через refresh token.
+8. Проверьте: `whoop auth check`.
 
 > **Важно:** Redirect на `localhost:8080` не сработает в браузере на другом устройстве — это нормально. Просто скопируйте URL из адресной строки, даже если страница не загрузилась.
 
