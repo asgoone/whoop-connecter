@@ -1,14 +1,15 @@
 """
 Unit tests for whoop/schema/mappers.py
-Tests both flat (real API) and nested (docs-style) response formats.
+Tests the v2 nested format (real API) and the legacy flat fallback.
 """
 
 import pytest
 from tests.conftest import (
     make_body_measurement,
-    make_recovery, make_recovery_nested,
-    make_sleep, make_sleep_nested,
-    make_workout, make_cycle, make_cycle_nested,
+    make_recovery_flat, make_recovery_nested,
+    make_sleep_flat, make_sleep_nested,
+    make_workout, make_cycle_flat, make_cycle_nested,
+    make_cycle_v2, make_recovery_v2, make_sleep_v2, make_workout_v2,
 )
 from whoop.schema.mappers import (
     map_body_measurement,
@@ -22,12 +23,12 @@ from whoop.schema.mappers import (
 
 
 # ===========================================================================
-# map_recovery — flat format (real API)
+# map_recovery — legacy flat format (mapper fallback)
 # ===========================================================================
 
 class TestMapRecoveryFlat:
     def test_typical_green_state(self):
-        r = map_recovery(make_recovery(score=75))
+        r = map_recovery(make_recovery_flat(score=75))
         assert r.score == 75
         assert r.hrv_rmssd == 55.0
         assert r.resting_hr == 58
@@ -35,25 +36,25 @@ class TestMapRecoveryFlat:
 
     def test_score_zero_is_valid(self):
         """Score 0 is falsy — must NOT be treated as None."""
-        r = map_recovery(make_recovery(score=0))
+        r = map_recovery(make_recovery_flat(score=0))
         assert r.score == 0
 
     def test_score_100_max(self):
-        r = map_recovery(make_recovery(score=100))
+        r = map_recovery(make_recovery_flat(score=100))
         assert r.score == 100
 
     def test_pending_score_returns_all_none(self):
-        r = map_recovery(make_recovery(score_state="PENDING_SCORE"))
+        r = map_recovery(make_recovery_flat(score_state="PENDING_SCORE"))
         assert r.score is None
         assert r.hrv_rmssd is None
 
     def test_unscorable_returns_all_none(self):
-        r = map_recovery(make_recovery(score_state="UNSCORABLE"))
+        r = map_recovery(make_recovery_flat(score_state="UNSCORABLE"))
         assert r.score is None
 
     def test_skin_temp_zero_preserved(self):
         """skin_temp_celsius=0.0 should be preserved as 0.0, not None."""
-        r = map_recovery(make_recovery())
+        r = map_recovery(make_recovery_flat())
         assert r.skin_temp_deviation == 0.0
 
 
@@ -91,41 +92,41 @@ class TestMapRecoveryNested:
 
 
 # ===========================================================================
-# map_sleep — flat format (real API)
+# map_sleep — legacy flat format (mapper fallback)
 # ===========================================================================
 
 class TestMapSleepFlat:
     def test_typical_sleep(self):
-        s = map_sleep(make_sleep(score=82, efficiency=91.0))
+        s = map_sleep(make_sleep_flat(score=82, efficiency=91.0))
         assert s.score == 82
         assert s.efficiency == pytest.approx(0.91)
 
     def test_duration_from_in_bed_time(self):
         # 28440000 ms = 7.9 hours
-        s = map_sleep(make_sleep(in_bed_ms=28440000))
+        s = map_sleep(make_sleep_flat(in_bed_ms=28440000))
         assert s.duration_hours == pytest.approx(7.9, abs=0.01)
 
     def test_stages_from_flat_fields(self):
-        s = map_sleep(make_sleep(light_ms=13320000, sws_ms=4860000, rem_ms=4320000))
+        s = map_sleep(make_sleep_flat(light_ms=13320000, sws_ms=4860000, rem_ms=4320000))
         assert "total_light_sleep_time_milli" in s.stages
         assert s.stages["total_light_sleep_time_milli"] == 13320000
 
     def test_pending_score_returns_empty(self):
-        s = map_sleep(make_sleep(score_state="PENDING_SCORE"))
+        s = map_sleep(make_sleep_flat(score_state="PENDING_SCORE"))
         assert s.score is None
         assert s.duration_hours is None
         assert s.efficiency is None
 
     def test_efficiency_zero_is_zero(self):
-        s = map_sleep(make_sleep(efficiency=0.0))
+        s = map_sleep(make_sleep_flat(efficiency=0.0))
         assert s.efficiency == 0.0
 
     def test_respiratory_rate_extracted(self):
-        s = map_sleep(make_sleep(respiratory_rate=14.6))
+        s = map_sleep(make_sleep_flat(respiratory_rate=14.6))
         assert s.respiratory_rate == 14.6
 
     def test_sleep_consistency_extracted(self):
-        s = map_sleep(make_sleep(sleep_consistency=76))
+        s = map_sleep(make_sleep_flat(sleep_consistency=76))
         assert s.sleep_consistency == 76
 
     def test_sleep_needed_extracted(self):
@@ -135,29 +136,29 @@ class TestMapSleepFlat:
             "need_from_recent_strain_milli": 900000,
             "need_from_recent_nap_milli": -600000,
         }
-        s = map_sleep(make_sleep(sleep_needed=needed))
+        s = map_sleep(make_sleep_flat(sleep_needed=needed))
         assert s.sleep_needed == needed
 
     def test_sleep_needed_none_when_absent(self):
-        s = map_sleep(make_sleep())
+        s = map_sleep(make_sleep_flat())
         # No sleep_needed key in fixture → should be None
         assert s.sleep_needed is None
 
     def test_respiratory_rate_none_when_not_scored(self):
-        s = map_sleep(make_sleep(score_state="PENDING_SCORE"))
+        s = map_sleep(make_sleep_flat(score_state="PENDING_SCORE"))
         assert s.respiratory_rate is None
         assert s.sleep_consistency is None
         assert s.sleep_needed is None
 
     def test_respiratory_rate_none_when_absent(self):
         """Flat data without respiratory_rate should return None."""
-        data = make_sleep()
+        data = make_sleep_flat()
         del data["respiratory_rate"]
         s = map_sleep(data)
         assert s.respiratory_rate is None
 
     def test_sleep_consistency_none_when_absent(self):
-        data = make_sleep()
+        data = make_sleep_flat()
         del data["sleep_consistency_percentage"]
         s = map_sleep(data)
         assert s.sleep_consistency is None
@@ -295,12 +296,12 @@ class TestMapWorkout:
 
 
 # ===========================================================================
-# map_cycle — flat format (real API)
+# map_cycle — legacy flat format (mapper fallback)
 # ===========================================================================
 
 class TestMapCycleFlat:
     def test_typical_cycle(self):
-        a = map_cycle(make_cycle(strain=10.5, kj=8000.0))
+        a = map_cycle(make_cycle_flat(strain=10.5, kj=8000.0))
         assert a.strain == 10.5
         assert a.calories == int(8000.0 / 4.184)
         assert a.workouts == []
@@ -424,3 +425,61 @@ class TestMapBodyMeasurement:
         assert "height_meter" in d
         assert "weight_kilogram" in d
         assert "max_heart_rate" in d
+
+
+# ---------------------------------------------------------------------------
+# Real WHOOP API v2 records (nested "score", ids, timezone_offset)
+# ---------------------------------------------------------------------------
+
+class TestV2Records:
+    def test_recovery(self):
+        r = map_recovery(make_recovery_v2(score=74.0, hrv=61.2, rhr=55, spo2=96.5, skin_temp=33.1))
+        assert (r.score, r.hrv_rmssd, r.resting_hr, r.spo2, r.skin_temp_deviation) == (74, 61.2, 55, 96.5, 33.1)
+
+    def test_recovery_pending_is_empty(self):
+        r = map_recovery(make_recovery_v2(score_state="PENDING_SCORE"))
+        assert r.score is None and r.hrv_rmssd is None
+
+    def test_sleep(self):
+        s = map_sleep(make_sleep_v2(score=85, efficiency=92.5, in_bed_ms=28_800_000,
+                                    respiratory_rate=14.64, sleep_consistency=80))
+        assert s.score == 85
+        assert s.duration_hours == 8.0
+        assert s.efficiency == 0.925
+        assert s.respiratory_rate == 14.6
+        assert s.sleep_consistency == 80
+        assert s.stages["total_rem_sleep_time_milli"] == 4_000_000
+        assert s.stages["disturbance_count"] == 3
+        assert s.sleep_needed["baseline_milli"] == 27_000_000
+
+    def test_sleep_unscorable_is_empty(self):
+        s = map_sleep(make_sleep_v2(score_state="UNSCORABLE"))
+        assert s.score is None and s.duration_hours is None and s.stages == {}
+
+    def test_cycle(self):
+        c = map_cycle(make_cycle_v2(strain=13.4, kj=9000.0))
+        assert c.strain == 13.4
+        assert c.calories == int(9000.0 / 4.184)
+        assert c.workouts == []
+
+    def test_cycle_in_progress_without_score_values(self):
+        record = make_cycle_v2(end=None)
+        record["score"] = {}
+        c = map_cycle(record)
+        assert c.strain is None and c.calories is None
+
+    def test_workout_uses_sport_name(self):
+        w = map_workout(make_workout_v2(sport_name="running", sport_id=0))
+        assert w.sport == "running"
+        assert w.strain == 12.0
+        assert w.duration_minutes == 60.0
+        assert (w.avg_hr, w.max_hr) == (145, 178)
+        assert w.calories == int(2000.0 / 4.184)
+        assert (w.distance_meter, w.altitude_gain_meter, w.percent_recorded) == (5000.0, 120.0, 98.5)
+        assert w.zone_durations["zone_two_milli"] == 1_200_000
+
+    def test_top_level_metadata_does_not_shadow_score(self):
+        """v2 top-level keys (ids, score_state, timezone_offset) never collide with metrics."""
+        record = make_recovery_v2(score=40)
+        assert map_recovery(record).score == 40
+

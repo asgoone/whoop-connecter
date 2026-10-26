@@ -2,11 +2,10 @@
 Pure functions: WHOOP API JSON → unified schema dataclasses.
 No side effects, no I/O.
 
-Supports both flat and nested response formats from WHOOP API.
-The real API (as of 2026-03) returns flat records where fields like
-recovery_score, hrv_rmssd_milli sit at the top level — NOT inside
-a nested "score" object. We check flat fields first, then fall back
-to the nested "score.*" path for forward-compatibility.
+WHOOP API v2 returns metrics nested under a "score" object (verified
+against live responses, 2026-10). A legacy flat shape with metrics at the
+top level is still accepted: top-level fields are checked first, then
+"score.*".
 """
 
 from __future__ import annotations
@@ -70,7 +69,7 @@ def map_body_measurement(data: dict) -> BodyMeasurement:
 def map_recovery(data: dict) -> RecoveryData:
     """Map a single WHOOP recovery record to RecoveryData.
 
-    Handles both flat format (real API) and nested score format.
+    Handles the v2 nested score format and the legacy flat format.
     Respects score_state: returns all-None if not SCORED.
     """
     score_state = data.get("score_state")
@@ -105,7 +104,7 @@ def map_recovery(data: dict) -> RecoveryData:
 def map_sleep(data: dict) -> SleepData:
     """Map a single WHOOP sleep record to SleepData.
 
-    Handles both flat format (real API) and nested score format.
+    Handles the v2 nested score format and the legacy flat format.
     Duration is computed from total_in_bed_time_milli if available,
     otherwise from start/end timestamps.
     """
@@ -161,7 +160,7 @@ def _build_stages(data: dict, score_obj: dict, stage_summary: dict) -> dict:
     if stage_summary:
         return stage_summary
 
-    # Try flat fields (real API format)
+    # Legacy flat fields
     stage_keys = [
         "total_light_sleep_time_milli",
         "total_slow_wave_sleep_time_milli",

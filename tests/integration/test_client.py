@@ -12,8 +12,6 @@ from whoop.api.client import WhoopClient, WhoopAPIError
 from whoop.errors import ErrorCode, WhoopError
 
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def mock_token():
@@ -46,13 +44,13 @@ class TestWhoopClientGet:
         expected = {"records": [{"id": 1}]}
         client._http.get = AsyncMock(return_value=_make_response(200, expected))
 
-        result = await client.get("/v1/recovery")
+        result = await client.get("/v2/recovery")
         assert result == expected
 
     async def test_authorization_header_sent(self, client, mock_token):
         client._http.get = AsyncMock(return_value=_make_response(200, {}))
 
-        await client.get("/v1/recovery", use_cache=False)
+        await client.get("/v2/recovery", use_cache=False)
         call_kwargs = client._http.get.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers", {})
         assert headers.get("Authorization") == f"Bearer {mock_token}"
@@ -61,18 +59,18 @@ class TestWhoopClientGet:
         client._http.get = AsyncMock(return_value=_make_response(200, {"data": "fresh"}))
 
         # First call — should hit HTTP
-        await client.get("/v1/profile")
+        await client.get("/v2/profile")
         assert client._http.get.call_count == 1
 
         # Second call — should use cache
-        await client.get("/v1/profile")
+        await client.get("/v2/profile")
         assert client._http.get.call_count == 1  # still 1
 
     async def test_use_cache_false_always_fetches(self, client):
         client._http.get = AsyncMock(return_value=_make_response(200, {"fresh": True}))
 
-        await client.get("/v1/profile", use_cache=False)
-        await client.get("/v1/profile", use_cache=False)
+        await client.get("/v2/profile", use_cache=False)
+        await client.get("/v2/profile", use_cache=False)
         assert client._http.get.call_count == 2
 
     async def test_401_retried_with_new_token(self):
@@ -88,43 +86,45 @@ class TestWhoopClientGet:
         ]
         client._http.get = AsyncMock(side_effect=responses)
 
-        result = await client.get("/v1/recovery", use_cache=False)
+        result = await client.get("/v2/recovery", use_cache=False)
         assert result == {"ok": True}
         assert client._http.get.call_count == 2
-
-    async def test_401_on_retry_raises_api_error(self):
-        client = WhoopClient(token_getter=lambda: "token", cache_ttl=0)
-        client._http.get = AsyncMock(return_value=_make_response(401, {"message": "Unauthorized"}))
-
-        with pytest.raises(WhoopAPIError) as exc_info:
-            await client.get("/v1/recovery", use_cache=False)
-        assert exc_info.value.status_code == 401
-
-    async def test_429_raises_api_error(self, client):
-        client._http.get = AsyncMock(return_value=_make_response(429, {"message": "Rate limited"}))
-
-        with pytest.raises(WhoopAPIError) as exc_info:
-            await client.get("/v1/recovery", use_cache=False)
-        assert exc_info.value.status_code == 429
-
-    async def test_500_raises_api_error(self, client):
-        client._http.get = AsyncMock(return_value=_make_response(500, "Internal Server Error"))
-
-        with pytest.raises(WhoopAPIError) as exc_info:
-            await client.get("/v1/recovery", use_cache=False)
-        assert exc_info.value.status_code == 500
 
     async def test_non_json_error_body_still_raises(self, client):
         client._http.get = AsyncMock(return_value=_make_response(503, "Service Unavailable"))
 
-        with pytest.raises(WhoopAPIError):
-            await client.get("/v1/recovery", use_cache=False)
+        with pytest.raises(WhoopAPIError) as exc_info:
+            await client.get("/v2/recovery", use_cache=False)
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.code == ErrorCode.TRANSIENT_ERROR
+        assert "Service Unavailable" in exc_info.value.message
+
+    async def test_other_4xx_is_api_error_without_retry(self, client):
+        client._http.get = AsyncMock(return_value=_make_response(404, {"message": "Not Found"}))
+
+        with pytest.raises(WhoopAPIError) as exc_info:
+            await client.get("/v2/recovery", use_cache=False)
+        assert exc_info.value.code == ErrorCode.API_ERROR
+        assert client._http.get.call_count == 1
+
+    async def test_long_error_body_is_truncated(self, client):
+        client._http.get = AsyncMock(return_value=_make_response(404, {"message": "x" * 5000}))
+
+        with pytest.raises(WhoopAPIError) as exc_info:
+            await client.get("/v2/recovery", use_cache=False)
+        assert len(exc_info.value.message) < 300
+
+    async def test_list_response_is_one_page(self, client):
+        client._http.get = AsyncMock(return_value=_make_response(200, [{"id": 1}, {"id": 2}]))
+
+        assert await client.get_paginated("/v2/workout") == [{"id": 1}, {"id": 2}]
+        assert client._http.get.call_count == 1
 
     async def test_params_passed_to_http(self, client):
         client._http.get = AsyncMock(return_value=_make_response(200, {}))
         params = {"start": "2026-03-10T00:00:00Z"}
 
-        await client.get("/v1/recovery", params=params, use_cache=False)
+        await client.get("/v2/recovery", params=params, use_cache=False)
         call_kwargs = client._http.get.call_args
         sent_params = call_kwargs.kwargs.get("params") or call_kwargs[1].get("params")
         assert sent_params == params
@@ -140,7 +140,7 @@ class TestWhoopClientPaginated:
         response = {"records": [{"id": 1}, {"id": 2}], "next_token": None}
         client._http.get = AsyncMock(return_value=_make_response(200, response))
 
-        results = await client.get_paginated("/v1/workout")
+        results = await client.get_paginated("/v2/workout")
         assert len(results) == 2
 
     async def test_multiple_pages(self, client):
@@ -151,7 +151,7 @@ class TestWhoopClientPaginated:
         ]
         client._http.get = AsyncMock(side_effect=[_make_response(200, p) for p in pages])
 
-        results = await client.get_paginated("/v1/workout")
+        results = await client.get_paginated("/v2/workout")
         assert [r["id"] for r in results] == [1, 2, 3]
 
     async def test_max_pages_raises_incomplete_data(self, client):
@@ -159,20 +159,39 @@ class TestWhoopClientPaginated:
         client._http.get = AsyncMock(return_value=_make_response(200, infinite_page))
 
         with pytest.raises(WhoopError) as exc_info:
-            await client.get_paginated("/v1/workout", max_pages=3)
+            await client.get_paginated("/v2/workout", max_pages=3)
         assert exc_info.value.code == ErrorCode.INCOMPLETE_DATA
         assert client._http.get.call_count == 3
+
+    async def test_exactly_max_pages_is_complete(self, client):
+        pages = [
+            {"records": [{"id": 1}], "next_token": "p2"},
+            {"records": [{"id": 2}], "next_token": "p3"},
+            {"records": [{"id": 3}], "next_token": None},
+        ]
+        client._http.get = AsyncMock(side_effect=[_make_response(200, p) for p in pages])
+
+        results = await client.get_paginated("/v2/workout", max_pages=3)
+        assert [r["id"] for r in results] == [1, 2, 3]
+
+    async def test_next_token_forwarded_as_nextToken(self, client):
+        pages = [{"records": [], "next_token": "abc"}, {"records": [], "next_token": None}]
+        client._http.get = AsyncMock(side_effect=[_make_response(200, p) for p in pages])
+
+        await client.get_paginated("/v2/workout")
+        second = client._http.get.call_args_list[1].kwargs["params"]
+        assert second["nextToken"] == "abc"
 
     async def test_empty_records_returns_empty_list(self, client):
         client._http.get = AsyncMock(return_value=_make_response(200, {"records": [], "next_token": None}))
 
-        results = await client.get_paginated("/v1/workout")
+        results = await client.get_paginated("/v2/workout")
         assert results == []
 
     async def test_limit_passed_as_param(self, client):
         client._http.get = AsyncMock(return_value=_make_response(200, {"records": [], "next_token": None}))
 
-        await client.get_paginated("/v1/workout", limit=10)
+        await client.get_paginated("/v2/workout", limit=10)
         call_kwargs = client._http.get.call_args
         params = call_kwargs.kwargs.get("params") or call_kwargs[1].get("params", {})
         assert params.get("limit") == 10

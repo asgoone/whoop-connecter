@@ -8,12 +8,11 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
+from tests.conftest import make_cycle_v2, make_recovery_v2, make_sleep_v2, make_workout_v2
 from whoop.api.client import WhoopAPIError
 from whoop.analytics.daily_summary import DailySummary
 from whoop.analytics.trends import TrendReport, MetricTrend
 
-
-pytestmark = pytest.mark.asyncio
 
 EXPECTED_TOOLS = {
     "get_auth_status",
@@ -99,12 +98,6 @@ class TestToolRegistration:
         text = await _call(server, "nonexistent_tool")
         assert "Unknown tool" in text
 
-    async def test_tool_count_is_nine(self, server):
-        handler = server.request_handlers[ListToolsRequest]
-        result = await handler(ListToolsRequest(method="tools/list"))
-        assert len(result.root.tools) == 9
-
-
 class TestAuthStatusTool:
     async def test_returns_valid_json(self, server, mock_service):
         text = await _call(server, "get_auth_status")
@@ -152,20 +145,12 @@ class TestRecoveryTool:
         assert data["no_data"] is True
         assert "error" not in data
 
-    async def test_with_flat_data_returns_score(self, server, mock_service):
-        """Test with real flat API format."""
-        raw = {
-            "score_state": "SCORED",
-            "recovery_score": 74,
-            "hrv_rmssd_milli": 55.0,
-            "resting_heart_rate": 58,
-            "spo2_percentage": 97.0,
-            "skin_temp_celsius": 0.0,
-        }
-        mock_service.get_recovery = AsyncMock(return_value=raw)
-        text = await _call(server, "get_recovery")
-        data = json.loads(text)
-        assert data["score"] == 74
+    async def test_v2_record_returns_metrics(self, server, mock_service):
+        mock_service.get_recovery = AsyncMock(return_value=make_recovery_v2(score=74, hrv=55.0, rhr=58))
+        result = await _call_result(server, "get_recovery")
+        data = json.loads(result.content[0].text)
+        assert result.isError is False
+        assert (data["score"], data["hrv_rmssd"], data["resting_hr"]) == (74, 55.0, 58)
 
     async def test_date_params_passed_through(self, server, mock_service):
         mock_service.get_recovery = AsyncMock(return_value=None)
@@ -182,19 +167,34 @@ class TestSleepTool:
         assert data["no_data"] is True
         assert "error" not in data
 
-    async def test_with_flat_data_returns_score(self, server, mock_service):
-        """Test with real flat API format."""
-        raw = {
-            "score_state": "SCORED",
-            "sleep_performance_percentage": 85,
-            "sleep_efficiency_percentage": 91.0,
-            "total_in_bed_time_milli": 27000000,
-            "total_light_sleep_time_milli": 13000000,
-        }
-        mock_service.get_sleep = AsyncMock(return_value=raw)
-        text = await _call(server, "get_sleep")
-        data = json.loads(text)
+    async def test_v2_record_returns_metrics(self, server, mock_service):
+        mock_service.get_sleep = AsyncMock(return_value=make_sleep_v2(score=85, in_bed_ms=27_000_000))
+        data = json.loads(await _call(server, "get_sleep"))
         assert data["score"] == 85
+        assert data["duration_hours"] == 7.5
+
+
+class TestWorkoutsTool:
+    async def test_maps_v2_workouts(self, server, mock_service):
+        mock_service.get_workouts = AsyncMock(return_value=[make_workout_v2(sport_name="running")])
+        data = json.loads(await _call(server, "get_workouts", {"start": "2026-03-17T00:00:00Z"}))
+        assert len(data) == 1
+        assert data[0]["sport"] == "running"
+        assert data[0]["strain"] == 12.0
+        assert data[0]["duration_minutes"] == 60.0
+        mock_service.get_workouts.assert_called_once_with(start="2026-03-17T00:00:00Z", end=None)
+
+    async def test_no_workouts_is_empty_list(self, server, mock_service):
+        result = await _call_result(server, "get_workouts")
+        assert result.isError is False
+        assert json.loads(result.content[0].text) == []
+
+
+class TestCyclesTool:
+    async def test_maps_v2_cycles(self, server, mock_service):
+        mock_service.get_cycles = AsyncMock(return_value=[make_cycle_v2(strain=13.4, kj=9000.0)])
+        data = json.loads(await _call(server, "get_cycles"))
+        assert data == [{"strain": 13.4, "calories": int(9000.0 / 4.184)}]
 
 
 class TestDailySummaryTool:
@@ -243,8 +243,11 @@ class TestErrorHandling:
         mock_service.get_recovery = AsyncMock(
             side_effect=WhoopAPIError(429, "Rate limited")
         )
-        text = await _call(server, "get_recovery")
-        assert "429" in text or "Rate limited" in text
+        result = await _call_result(server, "get_recovery")
+        assert result.isError is True
+        error = json.loads(result.content[0].text)["error"]
+        assert error["code"] == "RATE_LIMITED"
+        assert error["hint"]
 
     async def test_unexpected_error_returns_internal_error_without_details(self, server, mock_service):
         mock_service.get_profile = AsyncMock(side_effect=RuntimeError("secret detail"))

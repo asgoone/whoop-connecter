@@ -20,8 +20,6 @@ from whoop.api.client import WhoopClient
 from whoop.services import WhoopService
 
 
-pytestmark = pytest.mark.asyncio
-
 TZ = "+03:00"
 
 
@@ -234,3 +232,31 @@ class TestParseTimestamp:
     async def test_invalid_returns_none(self, value):
         from whoop.services import _parse_ts
         assert _parse_ts(value) is None
+
+
+class TestTimezoneChange:
+    async def test_each_cycle_uses_its_own_offset(self):
+        from tests.conftest import make_cycle_v2, make_recovery_v2
+        from whoop.services import _cycle_day
+        # Moscow (+03:00) -> New York (-05:00) -> back to Moscow
+        cycles = [
+            make_cycle_v2(cycle_id=3, start="2026-10-23T20:30:00.000Z", end=None, tz="+03:00"),         # 23:30 Oct 23 MSK -> Oct 24
+            make_cycle_v2(cycle_id=2, start="2026-10-23T03:00:00.000Z", end="2026-10-23T20:30:00.000Z",
+                          tz="-05:00"),                                                                 # 22:00 Oct 22 NY -> Oct 23
+            make_cycle_v2(cycle_id=1, start="2026-10-21T21:30:00.000Z", end="2026-10-23T03:00:00.000Z",
+                          tz="+03:00"),                                                                 # 00:30 Oct 22 MSK -> Oct 22
+        ]
+        assert [_cycle_day(c) for c in cycles] == ["2026-10-24", "2026-10-23", "2026-10-22"]
+
+        client = MagicMock(spec=WhoopClient)
+        client.get_paginated = AsyncMock(side_effect=[
+            cycles,
+            [make_recovery_v2(cycle_id=c["id"], created_at=c["start"]) for c in cycles],
+            [],
+        ])
+        service = WhoopService(client=client, oauth=MagicMock())
+        with _now("2026-10-24T12:00:00+00:00"):
+            records = await service._fetch_daily_records_batch(7)
+        assert sorted(r.date for r in records) == ["2026-10-22", "2026-10-23", "2026-10-24"]
+        assert all(r.recovery is not None for r in records)
+
