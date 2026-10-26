@@ -121,8 +121,7 @@ class TestTokenStore:
         store.save(sample_tokens)
         data2 = store._path.read_bytes()
 
-        # Первые 12 байт — nonce; при разных nonce весь файл будет отличаться
-        assert data1[:12] != data2[:12] or data1 != data2
+        assert data1[:12] != data2[:12]
 
     def test_parent_dir_created_automatically(self, monkeypatch, tmp_path):
         monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
@@ -199,3 +198,28 @@ class TestTokenStoreRobustness:
         assert exc_info.value.code == ErrorCode.TRANSIENT_ERROR
         with waiter.lock():  # released after holder exits
             pass
+
+    def test_lock_dir_unusable_is_store_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        (tmp_path / "not_a_dir").write_text("x")
+        store = TokenStore(str(tmp_path / "not_a_dir" / "tokens.enc"))
+        with pytest.raises(WhoopError) as exc_info:
+            with store.lock():
+                pass
+        assert exc_info.value.code == ErrorCode.TOKEN_STORE_ERROR
+
+    def test_unreadable_token_path_is_store_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        (tmp_path / "tokens.enc").mkdir()  # reading a directory raises OSError
+        with pytest.raises(WhoopError) as exc_info:
+            TokenStore(str(tmp_path / "tokens.enc")).load()
+        assert exc_info.value.code == ErrorCode.TOKEN_STORE_ERROR
+
+    def test_unwritable_target_is_store_error(self, tmp_path, monkeypatch, sample_tokens):
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        (tmp_path / "tokens.enc").mkdir()  # os.replace onto a directory fails
+        with pytest.raises(WhoopError) as exc_info:
+            TokenStore(str(tmp_path / "tokens.enc")).save(sample_tokens)
+        assert exc_info.value.code == ErrorCode.TOKEN_STORE_ERROR
+        assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+

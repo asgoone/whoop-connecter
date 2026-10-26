@@ -12,8 +12,6 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-pytestmark = pytest.mark.asyncio
-
 CLIENT_SECRET = "dummy-client-secret-value"
 ENC_KEY = "c" * 64
 

@@ -7,13 +7,12 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from tests.conftest import make_cycle_v2, make_recovery_v2, make_sleep_v2, make_workout_v2
 from whoop.services import WhoopService
 from whoop.api.client import WhoopClient
 from whoop.auth.oauth import WhoopOAuth, OAuthConfig
 from whoop.auth.token_store import TokenData, TokenStore
 
-
-pytestmark = pytest.mark.asyncio
 
 
 # ---------------------------------------------------------------------------
@@ -25,66 +24,25 @@ def _cycle_id(date):
 
 
 def _make_recovery_raw(score=70, hrv=55.0, rhr=58, date="2026-03-17"):
-    return {
-        "cycle_id": _cycle_id(date),
-        "score_state": "SCORED",
-        "recovery_score": score,
-        "hrv_rmssd_milli": hrv,
-        "resting_heart_rate": rhr,
-        "spo2_percentage": 97.0,
-        "skin_temp_celsius": 0.0,
-        "created_at": f"{date}T06:00:00Z",
-    }
+    return make_recovery_v2(cycle_id=_cycle_id(date), created_at=f"{date}T06:00:00.000Z",
+                            score=score, hrv=hrv, rhr=rhr)
 
 
 def _make_sleep_raw(score=82, date="2026-03-17", respiratory_rate=14.6,
                     sleep_consistency=76):
-    return {
-        "id": 456,
-        "score_state": "SCORED",
-        "sleep_performance_percentage": score,
-        "sleep_efficiency_percentage": 91.0,
-        "respiratory_rate": respiratory_rate,
-        "sleep_consistency_percentage": sleep_consistency,
-        "total_in_bed_time_milli": 27000000,
-        "total_awake_time_milli": 1800000,
-        "total_light_sleep_time_milli": 13000000,
-        "total_slow_wave_sleep_time_milli": 5000000,
-        "total_rem_sleep_time_milli": 4000000,
-        "sleep_cycle_count": 5,
-        "created_at": f"{date}T00:00:00Z",
-    }
+    return make_sleep_v2(cycle_id=_cycle_id(date), start=f"{date}T00:00:00.000Z",
+                         end=f"{date}T07:30:00.000Z", score=score,
+                         respiratory_rate=respiratory_rate, sleep_consistency=sleep_consistency)
 
 
 def _make_cycle_raw(date="2026-03-17", strain=10.5):
-    return {
-        "id": _cycle_id(date),
-        "start": f"{date}T00:20:00.000Z",
-        "end": f"{date}T23:40:00.000Z",
-        "score_state": "SCORED",
-        "strain": strain,
-        "kilojoule": 8000,
-        "average_heart_rate": 67,
-        "max_heart_rate": 144,
-    }
+    return make_cycle_v2(cycle_id=_cycle_id(date), start=f"{date}T00:20:00.000Z",
+                         end=f"{date}T23:40:00.000Z", strain=strain)
 
 
 def _make_workout_raw(distance=5000.0, altitude_gain=120.0, percent_recorded=98.5):
-    score = {
-        "strain": 12.0,
-        "average_heart_rate": 145,
-        "max_heart_rate": 178,
-        "kilojoule": 2000,
-        "distance_meter": distance,
-        "altitude_gain_meter": altitude_gain,
-        "percent_recorded": percent_recorded,
-    }
-    return {
-        "sport_id": 1,
-        "start": "2026-03-17T08:00:00Z",
-        "end": "2026-03-17T09:00:00Z",
-        "score": score,
-    }
+    return make_workout_v2(sport_id=1, sport_name="cycling", distance=distance,
+                           altitude_gain=altitude_gain, percent_recorded=percent_recorded)
 
 
 @pytest.fixture

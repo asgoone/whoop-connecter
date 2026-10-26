@@ -16,8 +16,6 @@ from whoop.auth.oauth import OAuthConfig, WhoopOAuth, WHOOP_TOKEN_URL
 from whoop.auth.token_store import TokenData, TokenStore
 from whoop.errors import ErrorCode, WhoopError
 
-pytestmark = pytest.mark.asyncio
-
 KEY_HEX = "a" * 64
 
 
@@ -155,6 +153,27 @@ class TestTransientFailures:
         assert exc_info.value.code == ErrorCode.TRANSIENT_ERROR
         assert client._http.get.call_count == 3
         assert store.load().refresh_token == "refresh_0"
+
+
+class TestConcurrency:
+    async def test_fifty_concurrent_calls_on_expired_token_refresh_once(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        store = TokenStore(str(tmp_path / "tokens.enc"))
+        store.save(TokenData("stale", "refresh_0", time.time() - 10))
+        oauth = WhoopOAuth(OAuthConfig("cid", "csecret", "http://localhost:8080/callback"), store)
+        client = WhoopClient(token_getter=oauth.get_access_token, token_refresher=oauth.force_refresh, cache_ttl=0)
+
+        async def _get(endpoint, params, headers):
+            await asyncio.sleep(0)
+            ok = headers["Authorization"] == "Bearer access_1"
+            return _resp(200, {"ok": 1}) if ok else _resp(401)
+
+        client._http.get = _get
+        with patch("whoop.auth.oauth.httpx.post", return_value=_token_resp(1)) as post:
+            results = await asyncio.gather(*[client.get(f"/v2/{i}", use_cache=False) for i in range(50)])
+        assert results == [{"ok": 1}] * 50
+        assert post.call_count == 1
+        assert store.load().refresh_token == "refresh_1"
 
 
 class TestMalformedResponses:

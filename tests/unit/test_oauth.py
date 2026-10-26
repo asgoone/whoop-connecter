@@ -3,6 +3,7 @@ Regression tests for whoop/auth/oauth.py: refresh locking, typed errors,
 no interactive login in background paths, token response validation.
 """
 
+import contextlib
 import json
 import multiprocessing
 import os
@@ -248,6 +249,122 @@ class TestLogin:
         with pytest.raises(RuntimeError) as exc_info:
             oauth.exchange_callback("http://localhost:8080/callback?code=c&state=evil", "expected_secret_state", "v")
         assert "expected_secret_state" not in str(exc_info.value)
+
+
+class TestRevokeAndLockWait:
+    def test_revoke_removes_tokens(self, oauth, store):
+        store.save(_valid())
+        oauth.revoke()
+        assert not store.path.exists()
+
+    def test_revoke_waits_for_lock_and_keeps_file_on_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WHOOP_TOKEN_ENCRYPTION_KEY", KEY_HEX)
+        holder = TokenStore(str(tmp_path / "tokens.enc"))
+        holder.save(_valid())
+        oauth = WhoopOAuth(CONFIG, TokenStore(str(tmp_path / "tokens.enc"), lock_timeout=0.2))
+        with holder.lock():
+            with pytest.raises(WhoopError) as exc_info:
+                oauth.revoke()
+        assert exc_info.value.code == ErrorCode.TRANSIENT_ERROR
+        assert (tmp_path / "tokens.enc").exists()
+
+    def test_token_rotated_while_waiting_for_lock_is_reused(self, oauth, store, monkeypatch):
+        """Single-process version of the race: another process refreshes while we wait."""
+        store.save(_expired())
+        real_lock = store.lock
+
+        @contextlib.contextmanager
+        def lock_after_other_process_refreshed():
+            store.save(_valid(access="rotated_elsewhere", refresh="rotated_refresh"))
+            with real_lock():
+                yield
+
+        monkeypatch.setattr(store, "lock", lock_after_other_process_refreshed)
+        with patch("whoop.auth.oauth.httpx.post") as post:
+            assert oauth.get_access_token() == "rotated_elsewhere"
+        post.assert_not_called()
+
+
+class TestLoginHeadless:
+    """The explicit re-login path the owner uses on the server."""
+
+    @pytest.fixture
+    def fixed_auth(self, oauth, monkeypatch):
+        monkeypatch.setattr(oauth, "get_auth_url", lambda: ("https://auth.example/x", "st4te", "verifier"))
+        return oauth
+
+    def _answer(self, monkeypatch, text):
+        monkeypatch.setattr("builtins.input", lambda _prompt="": text)
+
+    def test_valid_callback_saves_tokens(self, fixed_auth, store, monkeypatch, capsys):
+        self._answer(monkeypatch, "http://localhost:8080/callback?code=c0de&state=st4te&scope=offline")
+        with patch("whoop.auth.oauth.httpx.post", return_value=_token_response()) as post:
+            fixed_auth.login_headless()
+        sent = post.call_args.kwargs["data"]
+        assert sent["grant_type"] == "authorization_code"
+        assert sent["code"] == "c0de"
+        assert sent["code_verifier"] == "verifier"
+        assert store.load().refresh_token == "new_refresh"
+        assert "https://auth.example/x" in capsys.readouterr().out
+
+    def test_empty_input_saves_nothing(self, fixed_auth, store, monkeypatch):
+        self._answer(monkeypatch, "   ")
+        with patch("whoop.auth.oauth.httpx.post") as post:
+            with pytest.raises(RuntimeError, match="No callback URL"):
+                fixed_auth.login_headless()
+        post.assert_not_called()
+        assert not store.path.exists()
+
+    def test_foreign_state_rejected(self, fixed_auth, store, monkeypatch):
+        self._answer(monkeypatch, "http://localhost:8080/callback?code=c0de&state=other")
+        with patch("whoop.auth.oauth.httpx.post") as post:
+            with pytest.raises(RuntimeError, match="State mismatch"):
+                fixed_auth.login_headless()
+        post.assert_not_called()
+
+    def test_access_denied_reported(self, fixed_auth, store, monkeypatch):
+        self._answer(monkeypatch, "http://localhost:8080/callback?error=access_denied&state=st4te")
+        with patch("whoop.auth.oauth.httpx.post") as post:
+            with pytest.raises(RuntimeError, match="access_denied"):
+                fixed_auth.login_headless()
+        post.assert_not_called()
+        assert not store.path.exists()
+
+    def test_relogin_replaces_existing_tokens(self, fixed_auth, store, monkeypatch):
+        store.save(_expired(refresh="dead_refresh"))
+        self._answer(monkeypatch, "http://localhost:8080/callback?code=c0de&state=st4te")
+        with patch("whoop.auth.oauth.httpx.post", return_value=_token_response()):
+            fixed_auth.login_headless()
+        assert store.load().refresh_token == "new_refresh"
+
+    def test_rejected_code_keeps_existing_tokens(self, fixed_auth, store, monkeypatch):
+        store.save(_expired(refresh="old_refresh"))
+        before = store.path.read_bytes()
+        self._answer(monkeypatch, "http://localhost:8080/callback?code=stale&state=st4te")
+        bad = _token_response(400, {"error": "invalid_grant"})
+        with patch("whoop.auth.oauth.httpx.post", return_value=bad):
+            with pytest.raises(WhoopError) as exc_info:
+                fixed_auth.login_headless()
+        assert exc_info.value.code == ErrorCode.REAUTH_REQUIRED
+        assert store.path.read_bytes() == before
+
+
+class TestScopeStatus:
+    def test_missing_scopes_reported(self, oauth, store):
+        store.save(TokenData("a", "r", time.time() + 3600, scope="offline read:profile read:sleep"))
+        status = oauth.token_status()
+        assert status["scopes"] == ["offline", "read:profile", "read:sleep"]
+        assert status["missing_scopes"] == ["read:body_measurement", "read:cycles", "read:recovery", "read:workout"]
+
+    def test_all_scopes_granted(self, oauth, store):
+        from whoop.auth.oauth import SCOPES
+        store.save(TokenData("a", "r", time.time() + 3600, scope=SCOPES))
+        assert oauth.token_status()["missing_scopes"] == []
+
+    def test_unknown_scope_omits_scope_fields(self, oauth, store):
+        store.save(TokenData("a", "r", time.time() + 3600))  # file written before scopes were stored
+        status = oauth.token_status()
+        assert "scopes" not in status and "missing_scopes" not in status
 
 
 # ---------------------------------------------------------------------------

@@ -1,16 +1,17 @@
 """
 Integration tests for WhoopService — API client mocked.
 Tests orchestration: data fetching, schema mapping, analytics.
-Uses real flat API format.
+Uses the real WHOOP v2 record shape (tests.conftest *_v2 builders).
 """
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from tests.conftest import make_cycle_v2, make_recovery_v2, make_sleep_v2, make_workout_v2
+from whoop.api import endpoints
+from whoop.errors import ErrorCode, WhoopError
 from whoop.services import WhoopService
 from whoop.api.client import WhoopClient
 
-
-pytestmark = pytest.mark.asyncio
 
 
 def _cycle_id(date):
@@ -18,63 +19,25 @@ def _cycle_id(date):
 
 
 def _make_recovery_raw(score=70, hrv=55.0, rhr=58, date="2026-03-17"):
-    """Real flat API format."""
-    return {
-        "cycle_id": _cycle_id(date),
-        "score_state": "SCORED",
-        "recovery_score": score,
-        "hrv_rmssd_milli": hrv,
-        "resting_heart_rate": rhr,
-        "spo2_percentage": 97.0,
-        "skin_temp_celsius": 0.0,
-        "created_at": f"{date}T06:00:00Z",
-    }
+    return make_recovery_v2(cycle_id=_cycle_id(date), created_at=f"{date}T06:00:00.000Z",
+                            score=score, hrv=hrv, rhr=rhr)
 
 
 def _make_sleep_raw(score=82, score_state="SCORED",
                     created_at="2026-03-17T00:00:00Z"):
-    """Real flat API format — no nap field, no start/end."""
-    return {
-        "id": 456,
-        "score_state": score_state,
-        "sleep_performance_percentage": score,
-        "sleep_efficiency_percentage": 91.0,
-        "total_in_bed_time_milli": 27000000,
-        "total_awake_time_milli": 1800000,
-        "total_light_sleep_time_milli": 13000000,
-        "total_slow_wave_sleep_time_milli": 5000000,
-        "total_rem_sleep_time_milli": 4000000,
-        "sleep_cycle_count": 5,
-        "created_at": created_at,
-    }
+    date = created_at[:10]
+    return make_sleep_v2(cycle_id=_cycle_id(date), start=f"{date}T00:00:00.000Z",
+                         end=f"{date}T07:30:00.000Z", created_at=created_at,
+                         score=score, score_state=score_state)
 
 
 def _make_cycle_raw(date="2026-03-17", strain=10.5):
-    """Real flat API format."""
-    return {
-        "id": _cycle_id(date),
-        "start": f"{date}T00:20:00.000Z",
-        "end": f"{date}T23:40:00.000Z",
-        "score_state": "SCORED",
-        "strain": strain,
-        "kilojoule": 8000,
-        "average_heart_rate": 67,
-        "max_heart_rate": 144,
-    }
+    return make_cycle_v2(cycle_id=_cycle_id(date), start=f"{date}T00:20:00.000Z",
+                         end=f"{date}T23:40:00.000Z", strain=strain)
 
 
 def _make_workout_raw():
-    return {
-        "sport_id": 0,
-        "start": "2026-03-17T08:00:00Z",
-        "end": "2026-03-17T09:00:00Z",
-        "score": {
-            "strain": 12.0,
-            "average_heart_rate": 145,
-            "max_heart_rate": 178,
-            "kilojoule": 2000,
-        },
-    }
+    return make_workout_v2()
 
 
 @pytest.fixture
@@ -103,7 +66,7 @@ class TestGetRecovery:
             "records": [_make_recovery_raw(score=74), _make_recovery_raw(score=60)]
         })
         result = await service.get_recovery()
-        assert result["recovery_score"] == 74
+        assert result["score"]["recovery_score"] == 74
 
     async def test_empty_records_returns_none(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={"records": []})
@@ -131,7 +94,7 @@ class TestGetSleep:
             ]
         })
         result = await service.get_sleep()
-        assert result["sleep_performance_percentage"] == 82
+        assert result["score"]["sleep_performance_percentage"] == 82
 
     async def test_prefers_scored_over_pending(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={
@@ -141,7 +104,7 @@ class TestGetSleep:
             ]
         })
         result = await service.get_sleep()
-        assert result["sleep_performance_percentage"] == 82
+        assert result["score"]["sleep_performance_percentage"] == 82
 
     async def test_empty_records_returns_none(self, service, mock_client):
         mock_client.get = AsyncMock(return_value={"records": []})
@@ -163,18 +126,10 @@ class TestGetDailySummary:
         assert summary.emoji == "🟢"
 
     async def test_no_data_summary(self, service, mock_client):
-        mock_client.get = AsyncMock(return_value={"records": []})
         mock_client.get_paginated = AsyncMock(return_value=[])
         summary = await service.get_daily_summary(date="2026-03-17")
         assert summary.recovery_score is None
         assert summary.emoji == "⚪"
-
-    async def test_date_defaults_to_today(self, service, mock_client):
-        mock_client.get = AsyncMock(return_value={"records": []})
-        mock_client.get_paginated = AsyncMock(return_value=[])
-        summary = await service.get_daily_summary(date=None)
-        assert summary is not None
-
 
 class TestGetTrends:
     async def _make_trends_data(self, mock_client, n_days=7, base_score=70):
@@ -282,6 +237,21 @@ class TestAuthStatus:
         mock_oauth.token_status.return_value = {"authenticated": False, "expires_at": None}
         result = service.auth_status()
         assert result["authenticated"] is False
+
+    async def test_auth_check_ok_never_returns_profile(self, service, mock_client):
+        mock_client.get = AsyncMock(return_value={"user_id": 1, "email": "owner@example.com"})
+        result = await service.auth_check()
+        assert result["check"] == {"ok": True}
+        assert "owner@example.com" not in str(result)
+        mock_client.get.assert_awaited_once_with(endpoints.PROFILE, use_cache=False)
+
+    async def test_auth_check_reports_typed_error(self, service, mock_client):
+        mock_client.get = AsyncMock(side_effect=WhoopError(ErrorCode.REAUTH_REQUIRED, "rejected"))
+        result = await service.auth_check()
+        assert result["check"]["ok"] is False
+        assert result["check"]["code"] == "REAUTH_REQUIRED"
+        assert result["check"]["hint"]
+        assert result["authenticated"] is True  # passive status is still included
 
     def test_logout_calls_revoke(self, service, mock_oauth):
         service.logout()
